@@ -86,6 +86,32 @@ The application minimizes to the system tray when closed. Right-click the tray i
 - Manage Tags
 - Exit
 
+## Troubleshooting
+
+### Context Menu Behavior
+
+**Normal Operation:**
+- Context menus appear when File Tagger is running
+- Context menus disappear when File Tagger is completely closed
+- Context menus should NOT disappear while File Tagger is running
+
+**If Context Menus Disappear While App is Running:**
+
+1. **Use the Manual Refresh**: 
+   - Open File Tagger application
+   - Go to Settings tab
+   - Click "Refresh Context Menus" button
+
+2. **Restart Windows Explorer**:
+   - Press `Ctrl+Shift+Esc` to open Task Manager
+   - Find "Windows Explorer" and click "Restart"
+
+3. **Re-add Directory**:
+   - Remove the directory from watched list
+   - Add it back again (this triggers context menu refresh)
+
+**Note:** Context menus are automatically removed when you close File Tagger and re-added when you start it. This is the intended behavior to keep your system clean.
+
 ### Database Architecture
 
 **Main Database**: `%APPDATA%\FileTagger\main.db`

@@ -104,6 +104,9 @@ namespace FileTagger
                     LoadDirectories();
                     LoadTags();
                     LoadTagFilter();
+                    
+                    // Refresh context menus to ensure they work with new directory
+                    ShellIntegration.RefreshContextMenus();
                 }
                 else
                 {
@@ -125,6 +128,9 @@ namespace FileTagger
                     LoadDirectories();
                     LoadTags();
                     LoadTagFilter();
+                    
+                    // Refresh context menus after directory removal
+                    ShellIntegration.RefreshContextMenus();
                 }
             }
         }
@@ -133,6 +139,23 @@ namespace FileTagger
         {
             RemoveDirectoryButton.IsEnabled = DirectoriesListBox.SelectedItem != null;
         }
+
+        private void RefreshContextMenus_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                ShellIntegration.RefreshContextMenus();
+                MessageBox.Show("Context menus refreshed successfully!\n\nYou may need to wait a few seconds or restart Windows Explorer for changes to appear.", 
+                    "Context Menus Refreshed", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to refresh context menus: {ex.Message}", 
+                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+
 
         private void SaveSettings_Click(object sender, RoutedEventArgs e)
         {

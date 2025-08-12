@@ -50,6 +50,7 @@
                     </Grid>
 
                     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="RefreshContextMenusButton" Content="Refresh Context Menus" Click="RefreshContextMenus_Click" Margin="0,0,10,0"/>
                         <Button x:Name="SaveSettingsButton" Content="Save Settings" Click="SaveSettings_Click"/>
                     </StackPanel>
                 </Grid>
