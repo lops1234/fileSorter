@@ -87,6 +87,12 @@ File Tagger supports powerful search syntax for finding files with complex tag c
 - Go to the "File Browser" tab
 - Type advanced search query in the search box (autocomplete will show available tags)
 - Click "Search" to filter files matching the query
+- Click "Open in Explorer" to copy all search result files to a temporary folder and open it in Explorer
+- Right-click on any file to:
+  - Open the file
+  - Open folder containing the file in Explorer
+  - Manage file tags
+  - Copy file path to clipboard
 - Click "?" for syntax help
 - Use "Clear" to reset the search
 - Use "Refresh Tags" to update the tag list after adding new tags
@@ -96,7 +102,32 @@ File Tagger supports powerful search syntax for finding files with complex tag c
 - Select "Filter Files by Tags"
 - Type advanced search query in the search box (autocomplete will show available tags)
 - Click "Search" to filter files matching the query
+- Click "Open in Explorer" to copy all filtered files to a temporary folder and open it in Explorer
+- Right-click on any file to:
+  - Open the file
+  - Open folder containing the file in Explorer
+  - Manage file tags
+  - Copy file path to clipboard
 - Click "?" for syntax help
+
+### Temporary Results Feature
+
+When you click "Open in Explorer", File Tagger:
+1. **Immediately opens Explorer** with a README.txt file containing your search parameters
+2. **Starts copying files in the background** - you can watch them appear in real-time
+3. **Shows progress** in the status bar (e.g., "Copying files... (5/20)")
+4. **Handles duplicate filenames** automatically (adds _1, _2, etc.)
+5. **Reports final status** with any errors encountered
+6. **Cleans up previous results** when opening new ones
+7. **Automatically deletes** the temporary directory when File Tagger closes
+
+**Benefits of this approach:**
+- **Instant feedback**: See your search parameters immediately
+- **Real-time progress**: Watch files appear as they're copied
+- **Non-blocking**: Continue using the application while copying
+- **Error reporting**: Know immediately if any files couldn't be copied
+
+**Note**: These are copies of your files - the originals remain in their original locations untouched.
 
 ### System Tray Features
 

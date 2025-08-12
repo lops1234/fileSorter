@@ -55,19 +55,22 @@ namespace FileTagger
             mainWindow.Show();
         }
 
-        protected override void OnExit(ExitEventArgs e)
+            protected override void OnExit(ExitEventArgs e)
+    {
+        // Only cleanup shell integration when the main application exits
+        // Command line instances should NOT remove the context menus
+        if (_isMainApplication)
         {
-            // Only cleanup shell integration when the main application exits
-            // Command line instances should NOT remove the context menus
-            if (_isMainApplication)
-            {
-                ShellIntegration.UnregisterContextMenu();
-                
-                // Release the mutex
-                _applicationMutex?.ReleaseMutex();
-                _applicationMutex?.Dispose();
-            }
-            base.OnExit(e);
+            ShellIntegration.UnregisterContextMenu();
+            
+            // Clean up temporary search results directory
+            Services.TempResultsManager.Instance.CleanupTempDirectory();
+            
+            // Release the mutex
+            _applicationMutex?.ReleaseMutex();
+            _applicationMutex?.Dispose();
         }
+        base.OnExit(e);
+    }
     }
 }

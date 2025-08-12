@@ -125,6 +125,7 @@
                     <Button x:Name="SearchButton" Content="Search" Click="Search_Click" Margin="10,0,0,0"/>
                     <Button x:Name="ClearFilterButton" Content="Clear" Click="ClearFilter_Click" Margin="5,0,0,0"/>
                     <Button x:Name="RefreshAllTagsButton" Content="Refresh Tags" Click="RefreshAllTags_Click" Margin="5,0,0,0"/>
+                    <Button x:Name="OpenInExplorerButton" Content="Open in Explorer" Click="OpenInExplorer_Click" Margin="5,0,0,0" ToolTip="Copy search results to temporary folder and open in Windows Explorer"/>
                     <Button x:Name="SearchHelpButton" Content="?" Click="SearchHelp_Click" Margin="5,0,0,0" Width="25" ToolTip="Show search syntax help"/>
                 </StackPanel>
                 <TextBlock x:Name="SearchStatusTextBlock" Margin="0,0,0,5" Foreground="Gray" FontSize="11"/>
@@ -144,8 +145,10 @@
                         <DataGrid.ContextMenu>
                             <ContextMenu>
                                 <MenuItem Header="Open File" Click="OpenFile_Click"/>
-                                <MenuItem Header="Open File Location" Click="OpenFileLocation_Click"/>
+                                <MenuItem Header="Open Folder in Explorer" Click="OpenFileFolder_Click"/>
                                 <MenuItem Header="Manage Tags" Click="ManageFileTags_Click"/>
+                                <Separator/>
+                                <MenuItem Header="Copy Path" Click="CopyFilePath_Click"/>
                             </ContextMenu>
                         </DataGrid.ContextMenu>
                     </DataGrid>

@@ -160,12 +160,88 @@ namespace FileTagger.Windows
             MessageBox.Show(helpText, "Search Syntax Help", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
-        private void Refresh_Click(object sender, RoutedEventArgs e)
+        private async void OpenInExplorer_Click(object sender, RoutedEventArgs e)
         {
-            LoadTags();
-            LoadAllFiles();
-            // Don't automatically show files - require search
-            InitializeTagSearch();
+            try
+            {
+                var files = FilesDataGrid.ItemsSource as List<DirectoryFileViewModel>;
+                if (files == null || !files.Any())
+                {
+                    MessageBox.Show("No files to open. Please run a search first.", "No Results", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                // Get current search query for README
+                var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "All files" : TagSearchTextBox.Text?.Trim();
+                if (string.IsNullOrEmpty(searchQuery))
+                    searchQuery = "All files";
+
+                // Prepare temp directory
+                var tempDir = TempResultsManager.Instance.PrepareTempDirectory();
+
+                // Create README file first with directory context
+                var readmeContent = $"File Tagger - Directory Search Results\n" +
+                                   $"=====================================\n\n" +
+                                   $"Source Directory: {_directoryPath}\n" +
+                                   $"Search Query: {searchQuery}\n" +
+                                   $"Files Found: {files.Count}\n" +
+                                   $"Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n\n" +
+                                   $"These are copies of files that matched your search criteria.\n" +
+                                   $"Original files remain in their original locations.\n" +
+                                   $"This temporary directory will be cleaned up when File Tagger closes.\n\n" +
+                                   $"Files will appear here as they are copied...";
+
+                var readmePath = Path.Combine(tempDir, "README.txt");
+                File.WriteAllText(readmePath, readmeContent);
+
+                // Open Explorer immediately with README
+                Process.Start("explorer.exe", $"\"{tempDir}\"");
+
+                // Update status to show copying is starting
+                SearchStatusTextBlock.Text = "Copying files to temporary directory... (0/0)";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
+
+                // Start copying files asynchronously
+                var filePaths = files.Select(f => f.FilePath).ToList();
+                var result = await TempResultsManager.Instance.CopySearchResultsAsync(filePaths, (copied, total) =>
+                {
+                    // Update progress on UI thread
+                    Dispatcher.Invoke(() =>
+                    {
+                        SearchStatusTextBlock.Text = $"Copying files to temporary directory... ({copied}/{total})";
+                    });
+                });
+
+                // Show final status
+                if (result.errors.Any())
+                {
+                    SearchStatusTextBlock.Text = $"Copied {result.copiedCount} files with {result.errors.Count} errors";
+                    SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+                    
+                    // Show error details if not too many
+                    if (result.errors.Count <= 5)
+                    {
+                        var errorMessage = $"Copied {result.copiedCount} files successfully.\n\nErrors:\n{string.Join("\n", result.errors)}";
+                        MessageBox.Show(errorMessage, "Copy Results", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
+                    else
+                    {
+                        var errorMessage = $"Copied {result.copiedCount} files successfully.\n\nErrors ({result.errors.Count} total):\n{string.Join("\n", result.errors.Take(3))}\n... and {result.errors.Count - 3} more errors.";
+                        MessageBox.Show(errorMessage, "Copy Results", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
+                }
+                else
+                {
+                    SearchStatusTextBlock.Text = $"Successfully copied {result.copiedCount} files to Explorer";
+                    SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Green;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error opening search results in Explorer: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                SearchStatusTextBlock.Text = "Error opening search results";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+            }
         }
 
         private void OpenFile_Click(object sender, RoutedEventArgs e)
@@ -174,11 +250,7 @@ namespace FileTagger.Windows
             {
                 try
                 {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = selectedFile.FilePath,
-                        UseShellExecute = true
-                    });
+                    Process.Start(new ProcessStartInfo(selectedFile.FilePath) { UseShellExecute = true });
                 }
                 catch (Exception ex)
                 {
@@ -187,19 +259,28 @@ namespace FileTagger.Windows
             }
         }
 
-        private void OpenFileLocation_Click(object sender, RoutedEventArgs e)
+        private void OpenFileFolder_Click(object sender, RoutedEventArgs e)
         {
             if (FilesDataGrid.SelectedItem is DirectoryFileViewModel selectedFile)
             {
                 try
                 {
+                    // Open Explorer and select the file
                     Process.Start("explorer.exe", $"/select,\"{selectedFile.FilePath}\"");
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Could not open file location: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show($"Could not open folder: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
+        }
+
+        private void Refresh_Click(object sender, RoutedEventArgs e)
+        {
+            LoadTags();
+            LoadAllFiles();
+            // Don't automatically show files - require search
+            InitializeTagSearch();
         }
 
         private void ManageFileTags_Click(object sender, RoutedEventArgs e)
@@ -210,8 +291,15 @@ namespace FileTagger.Windows
                 tagWindow.Owner = this;
                 if (tagWindow.ShowDialog() == true)
                 {
-                    LoadAllFiles(); // Refresh the file list
-                    // Don't auto-refresh displayed files - user needs to search again
+                    // Refresh the file list to show updated tags
+                    LoadAllFiles();
+                    
+                    // Refresh current search results if there's an active filter
+                    var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
+                    if (!string.IsNullOrEmpty(searchQuery))
+                    {
+                        ShowFilteredFiles(searchQuery);
+                    }
                 }
             }
         }
@@ -223,10 +311,11 @@ namespace FileTagger.Windows
                 try
                 {
                     System.Windows.Clipboard.SetText(selectedFile.FilePath);
+                    MessageBox.Show("File path copied to clipboard.", "Copied", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Could not copy file path: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show($"Could not copy path: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
         }
@@ -380,3 +469,4 @@ namespace FileTagger.Windows
         public string Name { get; set; } = string.Empty;
     }
 }
+
