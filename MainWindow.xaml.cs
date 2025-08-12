@@ -8,6 +8,8 @@ using System.Windows.Controls;
 using FileTagger.Services;
 using Microsoft.Win32;
 using FileTagger.Windows;
+using System.Drawing;
+using System.Windows.Media.Imaging;
 
 namespace FileTagger
 {
@@ -18,11 +20,59 @@ namespace FileTagger
         public MainWindow()
         {
             InitializeComponent();
+            CreateTrayIcon();
             LoadDirectories();
             LoadTags();
             // Don't auto-load files anymore - only when search is pressed
             LoadTagFilter();
         }
+
+        #region Tray Icon Creation
+
+        private void CreateTrayIcon()
+        {
+            try
+            {
+                // Create a simple icon programmatically
+                using (var bitmap = new Bitmap(16, 16))
+                {
+                    using (var graphics = Graphics.FromImage(bitmap))
+                    {
+                        // Clear background
+                        graphics.Clear(Color.Transparent);
+                        
+                        // Draw a simple folder icon
+                        using (var blueBrush = new SolidBrush(Color.SteelBlue))
+                        using (var darkBlueBrush = new SolidBrush(Color.DarkBlue))
+                        {
+                            // Draw folder body
+                            graphics.FillRectangle(blueBrush, 1, 4, 14, 10);
+                            // Draw folder tab
+                            graphics.FillRectangle(darkBlueBrush, 1, 4, 6, 2);
+                            // Draw border
+                            graphics.DrawRectangle(Pens.Black, 1, 4, 13, 9);
+                            
+                            // Add "T" for tags
+                            using (var font = new Font(System.Drawing.FontFamily.GenericSansSerif, 6, System.Drawing.FontStyle.Bold))
+                            {
+                                graphics.DrawString("T", font, Brushes.White, 6, 7);
+                            }
+                        }
+                    }
+                    
+                    // Convert to icon and set it
+                    var handle = bitmap.GetHicon();
+                    var icon = System.Drawing.Icon.FromHandle(handle);
+                    TrayIcon.Icon = icon;
+                }
+            }
+            catch
+            {
+                // If icon creation fails, the tray icon will use a default icon
+            }
+        }
+
+        #endregion
 
         #region Window Events
 

@@ -81,10 +81,12 @@ A Windows .NET 8 WPF application for tagging files and organizing them with meta
 
 ### System Tray Features
 
-The application minimizes to the system tray when closed. Right-click the tray icon to access:
+The application minimizes to the system tray when closed, showing a blue folder icon with "T" for "Tags". The icon is created programmatically for optimal display quality. Right-click the tray icon to access:
 - Open Settings
 - Manage Tags
 - Exit
+
+**Note**: The tray icon appears whenever File Tagger is running and disappears when the application is closed.
 
 ## Troubleshooting
 
