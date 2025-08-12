@@ -4,74 +4,55 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
-using FileTagger.Data;
-using Microsoft.EntityFrameworkCore;
+using FileTagger.Services;
 
 namespace FileTagger.Windows
 {
     public partial class TagManagementWindow : Window
     {
         private readonly string _filePath;
-        private FileRecord _fileRecord;
 
         public TagManagementWindow(string filePath)
         {
             InitializeComponent();
             _filePath = filePath;
             FilePathTextBlock.Text = filePath;
-            LoadFileRecord();
             LoadCurrentTags();
             LoadAvailableTags();
         }
 
         private void LoadFileRecord()
         {
-            using var context = new FileTagContext();
-            _fileRecord = context.FileRecords.FirstOrDefault(f => f.FilePath == _filePath);
-            
-            if (_fileRecord == null && File.Exists(_filePath))
-            {
-                // Create new file record
-                _fileRecord = new FileRecord
-                {
-                    FilePath = _filePath,
-                    FileName = Path.GetFileName(_filePath),
-                    LastModified = File.GetLastWriteTime(_filePath)
-                };
-                context.FileRecords.Add(_fileRecord);
-                context.SaveChanges();
-            }
+            // File record will be created automatically when tags are added
+            // This is now handled by the DatabaseManager
         }
 
         private void LoadCurrentTags()
         {
-            if (_fileRecord == null) return;
-
-            using var context = new FileTagContext();
-            var fileTags = context.FileTags
-                .Include(ft => ft.Tag)
-                .Where(ft => ft.FileRecordId == _fileRecord.Id)
-                .Select(ft => ft.Tag)
-                .OrderBy(t => t.Name)
-                .ToList();
-
-            CurrentTagsListBox.ItemsSource = fileTags.Select(t => t.Name).ToList();
+            var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
+            var currentFile = allFiles.FirstOrDefault(f => f.FullPath == _filePath);
+            
+            if (currentFile != null)
+            {
+                CurrentTagsListBox.ItemsSource = currentFile.Tags;
+            }
+            else
+            {
+                CurrentTagsListBox.ItemsSource = new List<string>();
+            }
         }
 
         private void LoadAvailableTags()
         {
-            if (_fileRecord == null) return;
+            var allTags = DatabaseManager.Instance.GetAllAvailableTags();
+            var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
+            var currentFile = allFiles.FirstOrDefault(f => f.FullPath == _filePath);
+            var currentTags = currentFile?.Tags ?? new List<string>();
 
-            using var context = new FileTagContext();
-            var currentTagIds = context.FileTags
-                .Where(ft => ft.FileRecordId == _fileRecord.Id)
-                .Select(ft => ft.TagId)
-                .ToList();
-
-            var availableTags = context.Tags
-                .Where(t => !currentTagIds.Contains(t.Id))
-                .OrderBy(t => t.Name)
+            var availableTags = allTags
+                .Where(t => !currentTags.Contains(t.Name))
                 .Select(t => t.Name)
+                .OrderBy(t => t)
                 .ToList();
 
             AvailableTagsListBox.ItemsSource = availableTags;
@@ -89,20 +70,40 @@ namespace FileTagger.Windows
 
         private void RemoveTag_Click(object sender, RoutedEventArgs e)
         {
-            if (CurrentTagsListBox.SelectedItem is string selectedTagName && _fileRecord != null)
+            if (CurrentTagsListBox.SelectedItem is string selectedTagName)
             {
-                using var context = new FileTagContext();
-                var tag = context.Tags.FirstOrDefault(t => t.Name == selectedTagName);
-                if (tag != null)
+                var directoryPath = Path.GetDirectoryName(_filePath);
+                if (string.IsNullOrEmpty(directoryPath)) return;
+
+                var relativePath = Path.GetRelativePath(directoryPath, _filePath);
+
+                try
                 {
-                    var fileTag = context.FileTags.FirstOrDefault(ft => ft.FileRecordId == _fileRecord.Id && ft.TagId == tag.Id);
-                    if (fileTag != null)
+                    using var dirDb = DatabaseManager.Instance.GetDirectoryDb(directoryPath);
+                    var fileRecord = dirDb.LocalFileRecords.FirstOrDefault(f => f.RelativePath == relativePath);
+                    if (fileRecord != null)
                     {
-                        context.FileTags.Remove(fileTag);
-                        context.SaveChanges();
-                        LoadCurrentTags();
-                        LoadAvailableTags();
+                        var tag = dirDb.LocalTags.FirstOrDefault(t => t.Name == selectedTagName);
+                        if (tag != null)
+                        {
+                            var fileTag = dirDb.LocalFileTags.FirstOrDefault(ft => ft.LocalFileRecordId == fileRecord.Id && ft.LocalTagId == tag.Id);
+                            if (fileTag != null)
+                            {
+                                dirDb.LocalFileTags.Remove(fileTag);
+                                dirDb.SaveChanges();
+
+                                // Sync changes to main database
+                                DatabaseManager.Instance.SynchronizeDirectoryTags(directoryPath);
+                                
+                                LoadCurrentTags();
+                                LoadAvailableTags();
+                            }
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Error removing tag: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
         }
@@ -110,76 +111,49 @@ namespace FileTagger.Windows
         private void CreateAndAddTag_Click(object sender, RoutedEventArgs e)
         {
             var tagName = NewTagTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : NewTagTextBox.Text?.Trim();
-            if (string.IsNullOrWhiteSpace(tagName) || _fileRecord == null)
+            if (string.IsNullOrWhiteSpace(tagName))
             {
                 MessageBox.Show("Please enter a tag name.", "Invalid Input", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            using var context = new FileTagContext();
-            
-            // Check if tag already exists
-            var existingTag = context.Tags.FirstOrDefault(t => t.Name.ToLower() == tagName.ToLower());
-            if (existingTag == null)
+            try
             {
-                // Create new tag
-                existingTag = new Tag { Name = tagName };
-                context.Tags.Add(existingTag);
-                context.SaveChanges();
-            }
-
-            // Check if file already has this tag
-            var existingFileTag = context.FileTags.FirstOrDefault(ft => ft.FileRecordId == _fileRecord.Id && ft.TagId == existingTag.Id);
-            if (existingFileTag == null)
-            {
-                // Add tag to file
-                context.FileTags.Add(new FileTag
-                {
-                    FileRecordId = _fileRecord.Id,
-                    TagId = existingTag.Id
-                });
-                context.SaveChanges();
+                DatabaseManager.Instance.AddTagToFile(_filePath, tagName);
                 
                 NewTagTextBox.Text = "Create new tag";
                 NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
                 LoadCurrentTags();
                 LoadAvailableTags();
             }
-            else
+            catch (Exception ex)
             {
-                MessageBox.Show("This file already has this tag.", "Duplicate Tag", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show($"Error adding tag: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
         private void AddSelectedTags_Click(object sender, RoutedEventArgs e)
         {
-            if (AvailableTagsListBox.SelectedItems.Count == 0 || _fileRecord == null)
+            if (AvailableTagsListBox.SelectedItems.Count == 0)
             {
                 MessageBox.Show("Please select one or more tags to add.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            using var context = new FileTagContext();
-            foreach (string tagName in AvailableTagsListBox.SelectedItems)
+            try
             {
-                var tag = context.Tags.FirstOrDefault(t => t.Name == tagName);
-                if (tag != null)
+                foreach (string tagName in AvailableTagsListBox.SelectedItems)
                 {
-                    var existingFileTag = context.FileTags.FirstOrDefault(ft => ft.FileRecordId == _fileRecord.Id && ft.TagId == tag.Id);
-                    if (existingFileTag == null)
-                    {
-                        context.FileTags.Add(new FileTag
-                        {
-                            FileRecordId = _fileRecord.Id,
-                            TagId = tag.Id
-                        });
-                    }
+                    DatabaseManager.Instance.AddTagToFile(_filePath, tagName);
                 }
+                
+                LoadCurrentTags();
+                LoadAvailableTags();
             }
-            
-            context.SaveChanges();
-            LoadCurrentTags();
-            LoadAvailableTags();
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error adding tags: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void Save_Click(object sender, RoutedEventArgs e)

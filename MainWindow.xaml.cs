@@ -5,8 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
-using FileTagger.Data;
-using Microsoft.EntityFrameworkCore;
+using FileTagger.Services;
 using Microsoft.Win32;
 using FileTagger.Windows;
 
@@ -89,9 +88,8 @@ namespace FileTagger
 
         private void LoadDirectories()
         {
-            using var context = new FileTagContext();
-            var directories = context.WatchedDirectories.Where(d => d.IsActive).ToList();
-            DirectoriesListBox.ItemsSource = directories.Select(d => d.DirectoryPath).ToList();
+            var directories = DatabaseManager.Instance.GetAllActiveDirectories();
+            DirectoriesListBox.ItemsSource = directories;
         }
 
         private void AddDirectory_Click(object sender, RoutedEventArgs e)
@@ -99,17 +97,14 @@ namespace FileTagger
             var dialog = new System.Windows.Forms.FolderBrowserDialog();
             if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
             {
-                using var context = new FileTagContext();
-                var existingDir = context.WatchedDirectories.FirstOrDefault(d => d.DirectoryPath == dialog.SelectedPath);
-                if (existingDir == null)
+                var activeDirectories = DatabaseManager.Instance.GetAllActiveDirectories();
+                if (!activeDirectories.Contains(dialog.SelectedPath))
                 {
-                    context.WatchedDirectories.Add(new WatchedDirectory
-                    {
-                        DirectoryPath = dialog.SelectedPath,
-                        IsActive = true
-                    });
-                    context.SaveChanges();
+                    DatabaseManager.Instance.AddWatchedDirectory(dialog.SelectedPath);
                     LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                    LoadFiles();
                 }
                 else
                 {
@@ -122,19 +117,16 @@ namespace FileTagger
         {
             if (DirectoriesListBox.SelectedItem is string selectedPath)
             {
-                var result = MessageBox.Show($"Remove directory '{selectedPath}' from watched list?\nThis will not delete any files or tags.", 
+                var result = MessageBox.Show($"Remove directory '{selectedPath}' from watched list?\nTags unique to this directory will be removed from the main tag list.", 
                     "Confirm Removal", MessageBoxButton.YesNo, MessageBoxImage.Question);
                 
                 if (result == MessageBoxResult.Yes)
                 {
-                    using var context = new FileTagContext();
-                    var directory = context.WatchedDirectories.FirstOrDefault(d => d.DirectoryPath == selectedPath);
-                    if (directory != null)
-                    {
-                        directory.IsActive = false;
-                        context.SaveChanges();
-                        LoadDirectories();
-                    }
+                    DatabaseManager.Instance.RemoveWatchedDirectory(selectedPath);
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                    LoadFiles();
                 }
             }
         }
@@ -160,8 +152,7 @@ namespace FileTagger
 
         private void LoadTags()
         {
-            using var context = new FileTagContext();
-            var tags = context.Tags.Include(t => t.FileTags).OrderBy(t => t.Name).ToList();
+            var tags = DatabaseManager.Instance.GetAllAvailableTags();
             TagsDataGrid.ItemsSource = tags;
         }
 
@@ -174,51 +165,56 @@ namespace FileTagger
                 return;
             }
 
-            using var context = new FileTagContext();
-            var existingTag = context.Tags.FirstOrDefault(t => t.Name.ToLower() == tagName.ToLower());
-            if (existingTag != null)
+            var existingTags = DatabaseManager.Instance.GetAllAvailableTags();
+            if (existingTags.Any(t => t.Name.Equals(tagName, StringComparison.OrdinalIgnoreCase)))
             {
                 MessageBox.Show("A tag with this name already exists.", "Duplicate Tag", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            var tagDescription = TagDescriptionTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagDescriptionTextBox.Text?.Trim();
-            var tag = new Tag
-            {
-                Name = tagName,
-                Description = string.IsNullOrWhiteSpace(tagDescription) ? null : tagDescription
-            };
-
-            context.Tags.Add(tag);
-            context.SaveChanges();
+            MessageBox.Show("To create tags, add them to files in watched directories using the context menu.", 
+                "Tag Creation", MessageBoxButton.OK, MessageBoxImage.Information);
 
             NewTagTextBox.Text = "Enter new tag name";
             NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
             TagDescriptionTextBox.Text = "Tag description (optional)";
             TagDescriptionTextBox.Foreground = System.Windows.Media.Brushes.Gray;
-            LoadTags();
-            LoadTagFilter();
         }
 
         private void DeleteTag_Click(object sender, RoutedEventArgs e)
         {
-            if (TagsDataGrid.SelectedItem is Tag selectedTag)
+            if (TagsDataGrid.SelectedItem is TagInfo selectedTag)
             {
-                var result = MessageBox.Show($"Delete tag '{selectedTag.Name}'?\nThis will remove the tag from all files.", 
+                var result = MessageBox.Show($"Delete tag '{selectedTag.Name}'?\nThis will remove the tag from all files in all directories.", 
                     "Confirm Deletion", MessageBoxButton.YesNo, MessageBoxImage.Question);
                 
                 if (result == MessageBoxResult.Yes)
                 {
-                    using var context = new FileTagContext();
-                    var tag = context.Tags.Find(selectedTag.Id);
-                    if (tag != null)
+                    // Delete from all directory databases
+                    var activeDirectories = DatabaseManager.Instance.GetAllActiveDirectories();
+                    foreach (var directoryPath in activeDirectories)
                     {
-                        context.Tags.Remove(tag);
-                        context.SaveChanges();
-                        LoadTags();
-                        LoadTagFilter();
-                        LoadFiles();
+                        try
+                        {
+                            using var dirDb = DatabaseManager.Instance.GetDirectoryDb(directoryPath);
+                            var localTag = dirDb.LocalTags.FirstOrDefault(t => t.Name == selectedTag.Name);
+                            if (localTag != null)
+                            {
+                                dirDb.LocalTags.Remove(localTag);
+                                dirDb.SaveChanges();
+                            }
+                        }
+                        catch
+                        {
+                            // Continue with other directories if one fails
+                        }
                     }
+                    
+                    // Resync all tags
+                    DatabaseManager.Instance.SynchronizeAllTags();
+                    LoadTags();
+                    LoadTagFilter();
+                    LoadFiles();
                 }
             }
         }
@@ -234,20 +230,14 @@ namespace FileTagger
 
         private void LoadFiles()
         {
-            using var context = new FileTagContext();
-            var files = context.FileRecords
-                .Include(f => f.FileTags)
-                .ThenInclude(ft => ft.Tag)
-                .OrderBy(f => f.FileName)
-                .ToList();
-
+            var files = DatabaseManager.Instance.GetAllFilesWithTags();
+            
             var fileViewModels = files.Select(f => new FileViewModel
             {
-                Id = f.Id,
                 FileName = f.FileName,
-                FilePath = f.FilePath,
+                FilePath = f.FullPath,
                 LastModified = f.LastModified,
-                TagsString = string.Join(", ", f.FileTags.Select(ft => ft.Tag.Name))
+                TagsString = f.TagsString
             }).ToList();
 
             FilesDataGrid.ItemsSource = fileViewModels;
@@ -255,11 +245,10 @@ namespace FileTagger
 
         private void LoadTagFilter()
         {
-            using var context = new FileTagContext();
-            var tags = context.Tags.OrderBy(t => t.Name).ToList();
+            var tags = DatabaseManager.Instance.GetAllAvailableTags();
             
-            var filterItems = new List<TagFilterItem> { new TagFilterItem { Id = 0, Name = "All Files" } };
-            filterItems.AddRange(tags.Select(t => new TagFilterItem { Id = t.Id, Name = t.Name }));
+            var filterItems = new List<TagFilterItem> { new TagFilterItem { Name = "All Files" } };
+            filterItems.AddRange(tags.Select(t => new TagFilterItem { Name = t.Name }));
             
             TagFilterComboBox.ItemsSource = filterItems;
             TagFilterComboBox.DisplayMemberPath = "Name";
@@ -270,27 +259,21 @@ namespace FileTagger
         {
             if (TagFilterComboBox.SelectedItem is TagFilterItem selectedFilter)
             {
-                if (selectedFilter.Id == 0)
+                if (selectedFilter.Name == "All Files")
                 {
                     LoadFiles(); // Show all files
                 }
                 else
                 {
-                    using var context = new FileTagContext();
-                    var files = context.FileRecords
-                        .Include(f => f.FileTags)
-                        .ThenInclude(ft => ft.Tag)
-                        .Where(f => f.FileTags.Any(ft => ft.TagId == selectedFilter.Id))
-                        .OrderBy(f => f.FileName)
-                        .ToList();
+                    var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
+                    var filteredFiles = allFiles.Where(f => f.Tags.Contains(selectedFilter.Name)).ToList();
 
-                    var fileViewModels = files.Select(f => new FileViewModel
+                    var fileViewModels = filteredFiles.Select(f => new FileViewModel
                     {
-                        Id = f.Id,
                         FileName = f.FileName,
-                        FilePath = f.FilePath,
+                        FilePath = f.FullPath,
                         LastModified = f.LastModified,
-                        TagsString = string.Join(", ", f.FileTags.Select(ft => ft.Tag.Name))
+                        TagsString = f.TagsString
                     }).ToList();
 
                     FilesDataGrid.ItemsSource = fileViewModels;
@@ -383,7 +366,6 @@ namespace FileTagger
 
     public class FileViewModel
     {
-        public int Id { get; set; }
         public string FileName { get; set; } = string.Empty;
         public string FilePath { get; set; } = string.Empty;
         public DateTime LastModified { get; set; }
@@ -392,7 +374,6 @@ namespace FileTagger
 
     public class TagFilterItem
     {
-        public int Id { get; set; }
         public string Name { get; set; } = string.Empty;
     }
 }

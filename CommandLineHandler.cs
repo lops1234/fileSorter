@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Windows;
-using FileTagger.Data;
+using FileTagger.Services;
 using FileTagger.Windows;
 
 namespace FileTagger
@@ -61,11 +61,8 @@ namespace FileTagger
             {
                 if (!File.Exists(filePath)) return false;
 
-                using var context = new FileTagContext();
-                var fileRecord = context.FileRecords
-                    .Where(f => f.FilePath == filePath)
-                    .Select(f => new { f.FileName, Tags = f.FileTags.Select(ft => ft.Tag.Name).ToList() })
-                    .FirstOrDefault();
+                var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
+                var fileRecord = allFiles.FirstOrDefault(f => f.FullPath == filePath);
 
                 if (fileRecord == null || !fileRecord.Tags.Any())
                 {

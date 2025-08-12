@@ -98,11 +98,9 @@ namespace FileTagger
         {
             try
             {
-                using var context = new FileTagger.Data.FileTagContext();
-                var watchedDirs = context.WatchedDirectories.Where(d => d.IsActive).ToList();
-                
+                var watchedDirs = FileTagger.Services.DatabaseManager.Instance.GetAllActiveDirectories();
                 var fileDir = Path.GetDirectoryName(filePath);
-                return watchedDirs.Any(wd => fileDir?.StartsWith(wd.DirectoryPath, StringComparison.OrdinalIgnoreCase) == true);
+                return watchedDirs.Any(wd => fileDir?.StartsWith(wd, StringComparison.OrdinalIgnoreCase) == true);
             }
             catch
             {

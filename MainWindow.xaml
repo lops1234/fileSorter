@@ -79,8 +79,8 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200"/>
                             <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="300"/>
-                            <DataGridTextColumn Header="Created" Binding="{Binding CreatedAt, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Width="150"/>
-                            <DataGridTextColumn Header="File Count" Binding="{Binding FileTags.Count}" Width="100"/>
+                            <DataGridTextColumn Header="Usage Count" Binding="{Binding TotalUsageCount}" Width="100"/>
+                            <DataGridTextColumn Header="Source Directories" Binding="{Binding SourceDirectoriesString}" Width="300"/>
                         </DataGrid.Columns>
                     </DataGrid>
 

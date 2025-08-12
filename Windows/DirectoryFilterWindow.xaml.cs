@@ -5,8 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
-using FileTagger.Data;
-using Microsoft.EntityFrameworkCore;
+using FileTagger.Services;
 
 namespace FileTagger.Windows
 {
@@ -26,11 +25,10 @@ namespace FileTagger.Windows
 
         private void LoadTags()
         {
-            using var context = new FileTagContext();
-            var tags = context.Tags.OrderBy(t => t.Name).ToList();
+            var tags = DatabaseManager.Instance.GetAllAvailableTags();
             
-            var filterItems = new List<TagFilterItem> { new TagFilterItem { Id = 0, Name = "All Files" } };
-            filterItems.AddRange(tags.Select(t => new TagFilterItem { Id = t.Id, Name = t.Name }));
+            var filterItems = new List<TagFilterItem> { new TagFilterItem { Name = "All Files" } };
+            filterItems.AddRange(tags.Select(t => new TagFilterItem { Name = t.Name }));
             
             TagFilterComboBox.ItemsSource = filterItems;
             TagFilterComboBox.DisplayMemberPath = "Name";
@@ -46,22 +44,15 @@ namespace FileTagger.Windows
             try
             {
                 var files = Directory.GetFiles(_directoryPath, "*.*", SearchOption.AllDirectories);
-                
-                using var context = new FileTagContext();
-                var fileRecords = context.FileRecords
-                    .Include(f => f.FileTags)
-                    .ThenInclude(ft => ft.Tag)
-                    .Where(f => files.Contains(f.FilePath))
-                    .ToList();
-
-                var fileDict = fileRecords.ToDictionary(f => f.FilePath, f => f);
+                var allTaggedFiles = DatabaseManager.Instance.GetAllFilesWithTags();
+                var taggedFilesInDir = allTaggedFiles.Where(f => f.DirectoryPath == _directoryPath).ToDictionary(f => f.FullPath, f => f);
 
                 foreach (var filePath in files)
                 {
                     try
                     {
                         var fileInfo = new FileInfo(filePath);
-                        var fileRecord = fileDict.GetValueOrDefault(filePath);
+                        var taggedFile = taggedFilesInDir.GetValueOrDefault(filePath);
                         
                         var fileViewModel = new DirectoryFileViewModel
                         {
@@ -70,9 +61,7 @@ namespace FileTagger.Windows
                             Extension = fileInfo.Extension,
                             FileSize = fileInfo.Length,
                             LastModified = fileInfo.LastWriteTime,
-                            TagsString = fileRecord != null 
-                                ? string.Join(", ", fileRecord.FileTags.Select(ft => ft.Tag.Name))
-                                : string.Empty
+                            TagsString = taggedFile?.TagsString ?? string.Empty
                         };
 
                         _allFiles.Add(fileViewModel);
@@ -96,16 +85,10 @@ namespace FileTagger.Windows
         {
             var filteredFiles = _allFiles;
 
-            if (TagFilterComboBox.SelectedItem is TagFilterItem selectedFilter && selectedFilter.Id != 0)
+            if (TagFilterComboBox.SelectedItem is TagFilterItem selectedFilter && selectedFilter.Name != "All Files")
             {
-                using var context = new FileTagContext();
-                var taggedFilePaths = context.FileTags
-                    .Include(ft => ft.FileRecord)
-                    .Where(ft => ft.TagId == selectedFilter.Id)
-                    .Select(ft => ft.FileRecord.FilePath)
-                    .ToHashSet();
-
-                filteredFiles = _allFiles.Where(f => taggedFilePaths.Contains(f.FilePath)).ToList();
+                filteredFiles = _allFiles.Where(f => !string.IsNullOrEmpty(f.TagsString) && 
+                    f.TagsString.Split(',').Select(t => t.Trim()).Contains(selectedFilter.Name)).ToList();
             }
 
             FilesDataGrid.ItemsSource = filteredFiles.OrderBy(f => f.FileName).ToList();

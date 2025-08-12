@@ -5,10 +5,11 @@ A Windows .NET 8 WPF application for tagging files and organizing them with meta
 ## Features
 
 - **System Tray Application**: Runs in the background and stays in the taskbar
-- **SQLite Database**: Stores file tags and metadata locally
+- **Distributed SQLite Database**: Main database + per-directory databases for scalable storage
 - **Windows Explorer Integration**: Right-click context menus for managing tags
 - **Directory Watching**: Configure which directories to enable tagging for
-- **Tag Management**: Create, view, and organize tags
+- **Cross-Directory Tag Management**: Use tags from any watched directory
+- **Intelligent Tag Synchronization**: Automatic sync between directory and main databases
 - **File Filtering**: Filter files by tags both in the app and in Explorer
 
 ## Getting Started
@@ -79,21 +80,37 @@ The application minimizes to the system tray when closed. Right-click the tray i
 - Manage Tags
 - Exit
 
-### Database Location
+### Database Architecture
 
-The SQLite database is stored at:
-`%APPDATA%\FileTagger\filetagger.db`
+**Main Database**: `%APPDATA%\FileTagger\main.db`
+- Stores watched directories and aggregated tag information
+- Tracks tag usage across all directories
+
+**Directory Databases**: `[WatchedDirectory]\.filetagger\tags.db`
+- One database per watched directory
+- Stores local file records and tags for that directory
+- Files are stored by relative path within the directory
 
 ## Technical Details
 
 - **Framework**: .NET 8 with WPF
-- **Database**: SQLite with Entity Framework Core
+- **Database**: Distributed SQLite with Entity Framework Core
+  - Main database for directory management and tag aggregation
+  - Per-directory databases for local file tagging
+  - Automatic synchronization between databases
 - **Shell Integration**: Windows Registry context menus
 - **UI Library**: WPF with custom styling and Hardcodet.NotifyIcon for system tray
+- **Architecture**: Service-based design with DatabaseManager singleton
 
 ## Architecture
 
-- `Data/`: Entity Framework models and database context
+- `Data/`: Entity Framework models and database contexts
+  - `MainModels.cs`: Models for main database (directories, aggregated tags)
+  - `DirectoryModels.cs`: Models for directory databases (files, local tags)
+  - `MainDbContext.cs`: Main database context
+  - `DirectoryDbContext.cs`: Directory-specific database context
+- `Services/`: Business logic and database management
+  - `DatabaseManager.cs`: Manages distributed database operations and synchronization
 - `Windows/`: WPF windows and dialogs
 - `ShellIntegration.cs`: Windows Explorer context menu integration
 - `CommandLineHandler.cs`: Handles context menu command line arguments

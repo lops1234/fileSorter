@@ -1,5 +1,5 @@
 using System.Windows;
-using FileTagger.Data;
+using FileTagger.Services;
 
 namespace FileTagger
 {
@@ -20,9 +20,8 @@ namespace FileTagger
                 }
             }
 
-            // Initialize database
-            using var context = new FileTagContext();
-            context.Database.EnsureCreated();
+            // Initialize distributed database system
+            DatabaseManager.Instance.Initialize();
 
             // Register shell context menu
             ShellIntegration.RegisterContextMenu();
