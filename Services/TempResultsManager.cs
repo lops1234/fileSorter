@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 
 namespace FileTagger.Services
@@ -16,6 +18,7 @@ namespace FileTagger.Services
 
         private string _tempDirectoryPath;
         private readonly object _lock = new object();
+        private CancellationTokenSource _currentCopyOperation;
 
         private TempResultsManager()
         {
@@ -67,24 +70,54 @@ namespace FileTagger.Services
         }
 
         /// <summary>
-        /// Copy search result files to temp directory asynchronously
+        /// Cancel any ongoing copy operation
         /// </summary>
-        public async System.Threading.Tasks.Task<(int copiedCount, List<string> errors)> CopySearchResultsAsync(List<string> filePaths, Action<int, int> progressCallback = null)
+        public void CancelCurrentCopyOperation()
         {
-            return await System.Threading.Tasks.Task.Run(() =>
+            lock (_lock)
             {
+                _currentCopyOperation?.Cancel();
+            }
+        }
+
+        /// <summary>
+        /// Copy search result files to temp directory asynchronously with cancellation support
+        /// </summary>
+        public async Task<(int copiedCount, List<string> errors, bool wasCancelled)> CopySearchResultsAsync(List<string> filePaths, Action<int, int> progressCallback = null)
+        {
+            return await Task.Run(() =>
+            {
+                CancellationTokenSource cts;
                 lock (_lock)
                 {
-                    var copiedCount = 0;
-                    var errors = new List<string>();
+                    // Cancel any existing operation
+                    _currentCopyOperation?.Cancel();
+                    
+                    // Create new cancellation token for this operation
+                    _currentCopyOperation = new CancellationTokenSource();
+                    cts = _currentCopyOperation;
+                }
 
-                    if (filePaths == null || !filePaths.Any())
-                    {
-                        return (copiedCount, errors);
-                    }
+                var copiedCount = 0;
+                var errors = new List<string>();
+                var wasCancelled = false;
 
+                if (filePaths == null || !filePaths.Any())
+                {
+                    return (copiedCount, errors, wasCancelled);
+                }
+
+                try
+                {
                     for (int i = 0; i < filePaths.Count; i++)
                     {
+                        // Check for cancellation before each file
+                        if (cts.Token.IsCancellationRequested)
+                        {
+                            wasCancelled = true;
+                            break;
+                        }
+
                         var sourceFile = filePaths[i];
                         try
                         {
@@ -108,6 +141,13 @@ namespace FileTagger.Services
                                 counter++;
                             }
 
+                            // Check for cancellation before copying
+                            if (cts.Token.IsCancellationRequested)
+                            {
+                                wasCancelled = true;
+                                break;
+                            }
+
                             File.Copy(sourceFile, destPath, true);
                             copiedCount++;
                             
@@ -119,9 +159,24 @@ namespace FileTagger.Services
                             errors.Add($"Failed to copy {Path.GetFileName(sourceFile)}: {ex.Message}");
                         }
                     }
-
-                    return (copiedCount, errors);
                 }
+                catch (OperationCanceledException)
+                {
+                    wasCancelled = true;
+                }
+                finally
+                {
+                    lock (_lock)
+                    {
+                        // Clear the current operation if it's still this one
+                        if (_currentCopyOperation == cts)
+                        {
+                            _currentCopyOperation = null;
+                        }
+                    }
+                }
+
+                return (copiedCount, errors, wasCancelled);
             });
         }
 

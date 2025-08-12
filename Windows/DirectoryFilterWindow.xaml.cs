@@ -211,6 +211,9 @@ namespace FileTagger.Windows
 
         private void Search_Click(object sender, RoutedEventArgs e)
         {
+            // Cancel any ongoing copy operations
+            Services.TempResultsManager.Instance.CancelCurrentCopyOperation();
+            
             var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
             
             if (string.IsNullOrEmpty(searchQuery))
@@ -225,6 +228,9 @@ namespace FileTagger.Windows
 
         private void SearchAll_Click(object sender, RoutedEventArgs e)
         {
+            // Cancel any ongoing copy operations
+            Services.TempResultsManager.Instance.CancelCurrentCopyOperation();
+            
             try
             {
                 SearchStatusTextBlock.Text = "Loading all files from directory...";
@@ -253,6 +259,9 @@ namespace FileTagger.Windows
 
         private void ClearFilter_Click(object sender, RoutedEventArgs e)
         {
+            // Cancel any ongoing copy operations
+            Services.TempResultsManager.Instance.CancelCurrentCopyOperation();
+            
             TagSearchTextBox.Text = "Enter search query...";
             TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Gray;
             SearchStatusTextBlock.Text = "";
@@ -320,7 +329,12 @@ namespace FileTagger.Windows
                 });
 
                 // Show final status
-                if (result.errors.Any())
+                if (result.wasCancelled)
+                {
+                    SearchStatusTextBlock.Text = $"File copying cancelled ({result.copiedCount} files copied before cancellation)";
+                    SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
+                }
+                else if (result.errors.Any())
                 {
                     SearchStatusTextBlock.Text = $"Copied {result.copiedCount} files with {result.errors.Count} errors";
                     SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
