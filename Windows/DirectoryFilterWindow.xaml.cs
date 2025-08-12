@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using FileTagger.Services;
+using Microsoft.EntityFrameworkCore;
 
 namespace FileTagger.Windows
 {
@@ -130,17 +131,123 @@ namespace FileTagger.Windows
             }
         }
 
+        private void ShowUntaggedFiles()
+        {
+            try
+            {
+                SearchStatusTextBlock.Text = "Loading untagged files...";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
+
+                var untaggedFiles = _allFiles.Where(f => string.IsNullOrEmpty(f.TagsString)).ToList();
+
+                FilesDataGrid.ItemsSource = untaggedFiles.OrderBy(f => f.FileName).ToList();
+                SearchStatusTextBlock.Text = $"Found {untaggedFiles.Count} untagged files";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Green;
+                FileCountTextBlock.Text = $"{untaggedFiles.Count} files";
+            }
+            catch (Exception ex)
+            {
+                SearchStatusTextBlock.Text = $"Error loading untagged files: {ex.Message}";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+                FilesDataGrid.ItemsSource = _allFiles.OrderBy(f => f.FileName).ToList();
+                FileCountTextBlock.Text = $"{_allFiles.Count} files";
+            }
+        }
+
+        private List<FileTagger.Services.FileWithTags> GetAllFilesInDirectory()
+        {
+            var fileMap = new Dictionary<string, FileTagger.Services.FileWithTags>(StringComparer.OrdinalIgnoreCase);
+            
+            try
+            {
+                // Get all files from the file system in this directory
+                var allFiles = Directory.GetFiles(_directoryPath, "*", SearchOption.AllDirectories);
+                
+                using var dirDb = Services.DatabaseManager.Instance.GetDirectoryDb(_directoryPath);
+                var taggedFilesMap = dirDb.LocalFileRecords
+                    .Include(f => f.LocalFileTags)
+                    .ThenInclude(lft => lft.LocalTag)
+                    .ToDictionary(f => Path.Combine(_directoryPath, f.RelativePath), 
+                                f => f, 
+                                StringComparer.OrdinalIgnoreCase);
+
+                foreach (var filePath in allFiles)
+                {
+                    try
+                    {
+                        var fileInfo = new FileInfo(filePath);
+                        var tags = new List<string>();
+                        
+                        // Get tags if file is in database
+                        if (taggedFilesMap.TryGetValue(filePath, out var taggedFile))
+                        {
+                            tags = taggedFile.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList();
+                        }
+
+                        fileMap[filePath] = new FileTagger.Services.FileWithTags
+                        {
+                            FileName = fileInfo.Name,
+                            FullPath = filePath,
+                            DirectoryPath = _directoryPath,
+                            LastModified = fileInfo.LastWriteTime,
+                            FileSize = fileInfo.Length,
+                            Tags = tags
+                        };
+                    }
+                    catch
+                    {
+                        // Skip files that can't be accessed
+                        continue;
+                    }
+                }
+            }
+            catch
+            {
+                // Return empty list on directory access errors
+            }
+
+            return fileMap.Values.OrderBy(f => f.FileName).ToList();
+        }
+
         private void Search_Click(object sender, RoutedEventArgs e)
         {
             var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
             
             if (string.IsNullOrEmpty(searchQuery))
             {
-                ShowFilteredFiles(); // Show all files
+                ShowUntaggedFiles(); // Show untagged files when no search query
             }
             else
             {
                 ShowFilteredFiles(searchQuery); // Show filtered files
+            }
+        }
+
+        private void SearchAll_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                SearchStatusTextBlock.Text = "Loading all files from directory...";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
+
+                var allFiles = GetAllFilesInDirectory();
+                var fileViewModels = allFiles.Select(f => new DirectoryFileViewModel
+                {
+                    FileName = f.FileName,
+                    FilePath = f.FullPath,
+                    TagsString = f.TagsString,
+                    LastModified = f.LastModified
+                }).ToList();
+
+                FilesDataGrid.ItemsSource = fileViewModels;
+                SearchStatusTextBlock.Text = $"Found {fileViewModels.Count} files in directory";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Green;
+            }
+            catch (Exception ex)
+            {
+                SearchStatusTextBlock.Text = $"Error loading files: {ex.Message}";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+                MessageBox.Show($"Error loading all files: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

@@ -343,6 +343,34 @@ namespace FileTagger
             }
         }
 
+        private void LoadUntaggedFiles()
+        {
+            try
+            {
+                SearchStatusTextBlock.Text = "Loading untagged files...";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
+
+                var untaggedFiles = DatabaseManager.Instance.GetUntaggedFiles();
+                var fileViewModels = untaggedFiles.Select(f => new FileViewModel
+                {
+                    FileName = f.FileName,
+                    FilePath = f.FullPath,
+                    TagsString = f.TagsString,
+                    LastModified = f.LastModified
+                }).ToList();
+
+                FilesDataGrid.ItemsSource = fileViewModels;
+                SearchStatusTextBlock.Text = $"Found {fileViewModels.Count} untagged files";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Green;
+            }
+            catch (Exception ex)
+            {
+                SearchStatusTextBlock.Text = $"Error loading untagged files: {ex.Message}";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+                MessageBox.Show($"Error loading untagged files: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private void LoadTagFilter()
         {
             // Initialize with placeholder text
@@ -358,11 +386,40 @@ namespace FileTagger
             
             if (string.IsNullOrEmpty(searchQuery))
             {
-                LoadFiles(); // Show all files
+                // Show untagged files when no search query is provided
+                LoadUntaggedFiles();
             }
             else
             {
                 LoadFiles(searchQuery); // Show filtered files
+            }
+        }
+
+        private void SearchAll_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                SearchStatusTextBlock.Text = "Loading all files from watched directories...";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
+
+                var allFiles = DatabaseManager.Instance.GetAllFilesInWatchedDirectories();
+                var fileViewModels = allFiles.Select(f => new FileViewModel
+                {
+                    FileName = f.FileName,
+                    FilePath = f.FullPath,
+                    TagsString = f.TagsString,
+                    LastModified = f.LastModified
+                }).ToList();
+
+                FilesDataGrid.ItemsSource = fileViewModels;
+                SearchStatusTextBlock.Text = $"Found {fileViewModels.Count} files in watched directories";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Green;
+            }
+            catch (Exception ex)
+            {
+                SearchStatusTextBlock.Text = $"Error loading files: {ex.Message}";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+                MessageBox.Show($"Error loading all files: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

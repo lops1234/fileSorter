@@ -83,10 +83,16 @@ File Tagger supports powerful search syntax for finding files with complex tag c
 
 #### Filtering Files by Tags
 
+**Search Options:**
+- **Search Button**: Execute tag-based search OR find untagged files (when search box is empty)
+- **Search All Button**: Find all files in watched directories (both tagged and untagged)
+- **Clear Button**: Reset search and clear results
+
 **In the Application:**
 - Go to the "File Browser" tab
 - Type advanced search query in the search box (autocomplete will show available tags)
-- Click "Search" to filter files matching the query
+- Click "Search" to filter files matching the query (or find untagged files if search is empty)
+- Click "Search All" to see every file in your watched directories
 - Click "Open in Explorer" to copy all search result files to a temporary folder and open it in Explorer
 - Right-click on any file to:
   - Open the file

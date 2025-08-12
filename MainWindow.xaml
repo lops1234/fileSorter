@@ -123,6 +123,7 @@
                         </Border>
                     </Popup>
                     <Button x:Name="SearchButton" Content="Search" Click="Search_Click" Margin="10,0,0,0"/>
+                    <Button x:Name="SearchAllButton" Content="Search All" Click="SearchAll_Click" Margin="5,0,0,0" ToolTip="Find all files in watched directories"/>
                     <Button x:Name="ClearFilterButton" Content="Clear" Click="ClearFilter_Click" Margin="5,0,0,0"/>
                     <Button x:Name="RefreshAllTagsButton" Content="Refresh Tags" Click="RefreshAllTags_Click" Margin="5,0,0,0"/>
                     <Button x:Name="OpenInExplorerButton" Content="Open in Explorer" Click="OpenInExplorer_Click" Margin="5,0,0,0" ToolTip="Copy search results to temporary folder and open in Windows Explorer"/>

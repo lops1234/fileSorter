@@ -431,6 +431,143 @@ namespace FileTagger.Services
 
             return directoriesWithFile;
         }
+
+        /// <summary>
+        /// Get all files in watched directories that have no tags
+        /// </summary>
+        public List<FileWithTags> GetUntaggedFiles()
+        {
+            var fileMap = new Dictionary<string, FileWithTags>(StringComparer.OrdinalIgnoreCase);
+            var activeDirectories = GetAllActiveDirectories();
+
+            foreach (var directoryPath in activeDirectories)
+            {
+                try
+                {
+                    // Get all files from the file system in this directory
+                    var allFiles = Directory.GetFiles(directoryPath, "*", SearchOption.AllDirectories);
+                    
+                    using var dirDb = GetDirectoryDb(directoryPath);
+                    var taggedFiles = dirDb.LocalFileRecords
+                        .Include(f => f.LocalFileTags)
+                        .Where(f => f.LocalFileTags.Any())
+                        .Select(f => Path.Combine(directoryPath, f.RelativePath))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var filePath in allFiles)
+                    {
+                        // Skip if this file is already tagged in any database
+                        if (taggedFiles.Contains(filePath))
+                            continue;
+                        
+                        // Skip if we already processed this file from another directory
+                        if (fileMap.ContainsKey(filePath))
+                            continue;
+
+                        try
+                        {
+                            var fileInfo = new FileInfo(filePath);
+                            fileMap[filePath] = new FileWithTags
+                            {
+                                FileName = fileInfo.Name,
+                                FullPath = filePath,
+                                DirectoryPath = GetMostSpecificDirectory(filePath, activeDirectories),
+                                LastModified = fileInfo.LastWriteTime,
+                                FileSize = fileInfo.Length,
+                                Tags = new List<string>() // No tags
+                            };
+                        }
+                        catch
+                        {
+                            // Skip files that can't be accessed
+                            continue;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Skip directories with issues
+                    continue;
+                }
+            }
+
+            return fileMap.Values.OrderBy(f => f.FileName).ToList();
+        }
+
+        /// <summary>
+        /// Get all files in watched directories (both tagged and untagged)
+        /// </summary>
+        public List<FileWithTags> GetAllFilesInWatchedDirectories()
+        {
+            var fileMap = new Dictionary<string, FileWithTags>(StringComparer.OrdinalIgnoreCase);
+            var activeDirectories = GetAllActiveDirectories();
+
+            foreach (var directoryPath in activeDirectories)
+            {
+                try
+                {
+                    // Get all files from the file system in this directory
+                    var allFiles = Directory.GetFiles(directoryPath, "*", SearchOption.AllDirectories);
+                    
+                    using var dirDb = GetDirectoryDb(directoryPath);
+                    var taggedFilesMap = dirDb.LocalFileRecords
+                        .Include(f => f.LocalFileTags)
+                        .ThenInclude(lft => lft.LocalTag)
+                        .ToDictionary(f => Path.Combine(directoryPath, f.RelativePath), 
+                                    f => f, 
+                                    StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var filePath in allFiles)
+                    {
+                        // Check if we already processed this file from another directory
+                        if (fileMap.TryGetValue(filePath, out var existingFile))
+                        {
+                            // Merge tags if this file is also tagged in this directory
+                            if (taggedFilesMap.TryGetValue(filePath, out var taggedFile))
+                            {
+                                var newTags = taggedFile.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList();
+                                existingFile.Tags = existingFile.Tags.Union(newTags).Distinct().ToList();
+                            }
+                            continue;
+                        }
+
+                        try
+                        {
+                            var fileInfo = new FileInfo(filePath);
+                            var tags = new List<string>();
+                            
+                            // Get tags if file is in database
+                            if (taggedFilesMap.TryGetValue(filePath, out var taggedFile))
+                            {
+                                tags = taggedFile.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList();
+                            }
+
+                            fileMap[filePath] = new FileWithTags
+                            {
+                                FileName = fileInfo.Name,
+                                FullPath = filePath,
+                                DirectoryPath = GetMostSpecificDirectory(filePath, activeDirectories),
+                                LastModified = fileInfo.LastWriteTime,
+                                FileSize = fileInfo.Length,
+                                Tags = tags
+                            };
+                        }
+                        catch
+                        {
+                            // Skip files that can't be accessed
+                            continue;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Skip directories with issues
+                    continue;
+                }
+            }
+
+            return fileMap.Values.OrderBy(f => f.FileName).ToList();
+        }
     }
 
     /// <summary>
