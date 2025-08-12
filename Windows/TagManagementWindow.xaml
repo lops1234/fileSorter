@@ -1,0 +1,69 @@
+<Window x:Class="FileTagger.Windows.TagManagementWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Manage File Tags" Height="500" Width="600"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize">
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- File Info -->
+        <TextBlock Grid.Row="0" Text="File:" FontWeight="Bold" Margin="0,0,0,5"/>
+        <TextBlock Grid.Row="1" x:Name="FilePathTextBlock" TextWrapping="Wrap" Margin="0,0,0,15" 
+                   Foreground="DarkSlateGray" FontFamily="Consolas"/>
+
+        <!-- Current Tags -->
+        <TextBlock Grid.Row="2" Text="Current Tags:" FontWeight="Bold" Margin="0,0,0,5"/>
+        <ListBox Grid.Row="2" x:Name="CurrentTagsListBox" Margin="0,25,0,0" 
+                 SelectionChanged="CurrentTagsListBox_SelectionChanged">
+            <ListBox.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Remove Tag" Click="RemoveTag_Click"/>
+                </ContextMenu>
+            </ListBox.ContextMenu>
+        </ListBox>
+
+        <!-- Add Tags Section -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,15,0,5">
+            <TextBlock Text="Add Tags:" FontWeight="Bold" VerticalAlignment="Center"/>
+            <Button x:Name="RemoveSelectedTagButton" Content="Remove Selected" 
+                    Click="RemoveSelectedTag_Click" Margin="20,0,0,0" IsEnabled="False"/>
+        </StackPanel>
+
+        <Grid Grid.Row="4">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                <TextBox x:Name="NewTagTextBox" Width="200" Text="Create new tag" Foreground="Gray" GotFocus="TextBox_GotFocus" LostFocus="TextBox_LostFocus"/>
+                <Button x:Name="CreateAndAddTagButton" Content="Create &amp; Add" Click="CreateAndAddTag_Click" Margin="10,0,0,0"/>
+                <TextBlock Text="OR" VerticalAlignment="Center" Margin="15,0"/>
+                <TextBlock Text="Select existing:" VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <ListBox Grid.Row="1" x:Name="AvailableTagsListBox" SelectionMode="Multiple">
+                <ListBox.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Add Selected Tags" Click="AddSelectedTags_Click"/>
+                    </ContextMenu>
+                </ListBox.ContextMenu>
+            </ListBox>
+        </Grid>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+            <Button x:Name="AddSelectedTagsButton" Content="Add Selected Tags" Click="AddSelectedTags_Click" Margin="0,0,10,0"/>
+            <Button x:Name="SaveButton" Content="Save" Click="Save_Click" IsDefault="True"/>
+            <Button x:Name="CancelButton" Content="Cancel" Click="Cancel_Click" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>
