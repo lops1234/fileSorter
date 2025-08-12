@@ -22,6 +22,7 @@ namespace FileTagger.Services
         private string _lastSearchQuery = "";
         private List<string> _lastFilePaths = new List<string>();
         private DateTime _lastCopyTime = DateTime.MinValue;
+        private Dictionary<string, string> _tempToOriginalMapping = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         private TempResultsManager()
         {
@@ -36,11 +37,12 @@ namespace FileTagger.Services
                 var baseTempPath = Path.GetTempPath();
                 _tempDirectoryPath = Path.Combine(baseTempPath, "FileTagger_SearchResults");
                 
-                // Clean up any existing temp directory
-                CleanupTempDirectory();
-                
-                // Create fresh temp directory
-                Directory.CreateDirectory(_tempDirectoryPath);
+                // Only create directory if it doesn't exist, don't clean up automatically
+                // Cleanup will be done explicitly when PrepareTempDirectory is called
+                if (!Directory.Exists(_tempDirectoryPath))
+                {
+                    Directory.CreateDirectory(_tempDirectoryPath);
+                }
             }
             catch (Exception ex)
             {
@@ -61,6 +63,10 @@ namespace FileTagger.Services
                     // Clean up previous results
                     CleanupTempDirectory();
                     Directory.CreateDirectory(_tempDirectoryPath);
+                    
+                    // Clear the mapping when preparing new temp directory
+                    _tempToOriginalMapping.Clear();
+                    
                     return _tempDirectoryPath;
                 }
                 catch (Exception ex)
@@ -117,7 +123,57 @@ namespace FileTagger.Services
                 if (tempFiles.Count == 0 && filePaths.Count > 0)
                     return true;
 
+                // If mapping is empty but we have temp files, rebuild the mapping
+                if (_tempToOriginalMapping.Count == 0 && tempFiles.Count > 0 && filePaths.Count > 0)
+                {
+                    RebuildMapping(tempFiles, filePaths);
+                }
+
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Rebuild the temp-to-original file mapping based on existing temp files and original file paths
+        /// </summary>
+        private void RebuildMapping(List<string> tempFiles, List<string> originalFilePaths)
+        {
+            _tempToOriginalMapping.Clear();
+            
+            // Match temp files to original files based on filename
+            foreach (var tempFile in tempFiles)
+            {
+                var tempFileName = Path.GetFileName(tempFile);
+                
+                // Find the original file with the same filename
+                var matchingOriginal = originalFilePaths.FirstOrDefault(orig => 
+                    Path.GetFileName(orig).Equals(tempFileName, StringComparison.OrdinalIgnoreCase));
+                
+                if (matchingOriginal != null)
+                {
+                    _tempToOriginalMapping[tempFileName] = matchingOriginal;
+                }
+                else
+                {
+                    // Try to find by removing the _1, _2, etc. suffix that gets added for duplicates
+                    var extension = Path.GetExtension(tempFileName);
+                    var nameWithoutExt = Path.GetFileNameWithoutExtension(tempFileName);
+                    
+                    // Remove _1, _2, etc. pattern from end
+                    var underscoreIndex = nameWithoutExt.LastIndexOf('_');
+                    if (underscoreIndex > 0 && int.TryParse(nameWithoutExt.Substring(underscoreIndex + 1), out _))
+                    {
+                        var baseFileName = nameWithoutExt.Substring(0, underscoreIndex) + extension;
+                        
+                        var baseMatchingOriginal = originalFilePaths.FirstOrDefault(orig => 
+                            Path.GetFileName(orig).Equals(baseFileName, StringComparison.OrdinalIgnoreCase));
+                        
+                        if (baseMatchingOriginal != null)
+                        {
+                            _tempToOriginalMapping[tempFileName] = baseMatchingOriginal;
+                        }
+                    }
+                }
             }
         }
 
@@ -131,6 +187,76 @@ namespace FileTagger.Services
                 _lastSearchQuery = searchQuery ?? "";
                 _lastFilePaths = new List<string>(filePaths);
                 _lastCopyTime = DateTime.Now;
+            }
+        }
+
+        /// <summary>
+        /// Get the original file path for a temp file
+        /// </summary>
+        public string GetOriginalFilePath(string tempFilePath)
+        {
+            lock (_lock)
+            {
+                var tempFileName = Path.GetFileName(tempFilePath);
+                var result = _tempToOriginalMapping.TryGetValue(tempFileName, out var originalPath) ? originalPath : null;
+                
+                // If no mapping found, try to rebuild mapping
+                if (result == null)
+                {
+                    var tempFiles = Directory.GetFiles(_tempDirectoryPath, "*", SearchOption.TopDirectoryOnly)
+                        .Where(f => !Path.GetFileName(f).Equals("README.txt", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    
+                    if (tempFiles.Count > 0)
+                    {
+                        List<string> originalFiles = null;
+                        
+                        // Try to use cached file paths first
+                        if (_lastFilePaths.Count > 0)
+                        {
+                            originalFiles = _lastFilePaths;
+                        }
+                        else
+                        {
+                            // Fallback: get all files from all watched directories (including untagged files)
+                            try
+                            {
+                                originalFiles = DatabaseManager.Instance.GetAllFilesInWatchedDirectories()
+                                    .Select(f => f.FullPath).ToList();
+                            }
+                            catch (Exception)
+                            {
+                                originalFiles = new List<string>();
+                            }
+                        }
+                        
+                        if (originalFiles.Count > 0)
+                        {
+                            RebuildMapping(tempFiles, originalFiles);
+                            
+                            // Try lookup again after rebuild
+                            result = _tempToOriginalMapping.TryGetValue(tempFileName, out originalPath) ? originalPath : null;
+                        }
+                    }
+                }
+                
+                return result;
+            }
+        }
+
+        /// <summary>
+        /// Check if a file path is in the temp directory
+        /// </summary>
+        public bool IsInTempDirectory(string filePath)
+        {
+            try
+            {
+                var fileDir = Path.GetDirectoryName(filePath);
+                return string.Equals(fileDir, _tempDirectoryPath, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -204,6 +330,10 @@ namespace FileTagger.Services
 
                             File.Copy(sourceFile, destPath, true);
                             copiedCount++;
+                            
+                            // Record the mapping from temp filename to original path
+                            var tempFileName = Path.GetFileName(destPath);
+                            _tempToOriginalMapping[tempFileName] = sourceFile;
                             
                             // Report progress
                             progressCallback?.Invoke(copiedCount, filePaths.Count);
@@ -285,7 +415,11 @@ namespace FileTagger.Services
                              $"Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n\n" +
                              $"These are copies of files that matched your search criteria.\n" +
                              $"Original files remain in their original locations.\n" +
-                             $"This temporary directory will be cleaned up when File Tagger closes.";
+                             $"This temporary directory will be cleaned up when File Tagger closes.\n\n" +
+                             $"⭐ TAG MANAGEMENT FEATURE ⭐\n" +
+                             $"You can right-click on any file here to add or manage tags!\n" +
+                             $"Tags will be applied to the original files in their actual locations.\n" +
+                             $"Use 'Manage Tags' or 'View File Tags' from the context menu.";
 
                 File.WriteAllText(readmePath, content);
             }

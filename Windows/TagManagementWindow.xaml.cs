@@ -11,12 +11,39 @@ namespace FileTagger.Windows
     public partial class TagManagementWindow : Window
     {
         private readonly string _filePath;
+        private readonly string _originalFilePath;
 
         public TagManagementWindow(string filePath)
         {
             InitializeComponent();
+            _originalFilePath = filePath;
             _filePath = filePath;
-            FilePathTextBlock.Text = filePath;
+            
+            // Check if this is a temp file and show appropriate info
+            if (TempResultsManager.Instance.IsInTempDirectory(filePath))
+            {
+                var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePath);
+                if (!string.IsNullOrEmpty(mappedPath))
+                {
+                    _filePath = mappedPath; // Use original file path for all operations
+                    
+                    // Show temp file info
+                    TempFileInfoPanel.Visibility = System.Windows.Visibility.Visible;
+                    TempFilePathTextBlock.Text = filePath;
+                    OriginalFilePathTextBlock.Text = mappedPath;
+                    FilePathTextBlock.Text = mappedPath;
+                }
+                else
+                {
+                    FilePathTextBlock.Text = filePath;
+                }
+            }
+            else
+            {
+                TempFileInfoPanel.Visibility = System.Windows.Visibility.Collapsed;
+                FilePathTextBlock.Text = filePath;
+            }
+            
             LoadCurrentTags();
             LoadAvailableTags();
         }

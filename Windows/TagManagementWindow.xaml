@@ -8,6 +8,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -19,9 +20,43 @@
         <TextBlock Grid.Row="1" x:Name="FilePathTextBlock" TextWrapping="Wrap" Margin="0,0,0,15" 
                    Foreground="DarkSlateGray" FontFamily="Consolas"/>
 
+        <!-- Temp File Info Panel (hidden by default) -->
+        <Border Grid.Row="2" x:Name="TempFileInfoPanel" 
+                Background="LightYellow" BorderBrush="Orange" BorderThickness="1" 
+                Padding="10" Margin="0,0,0,15" CornerRadius="3"
+                Visibility="Collapsed">
+            <StackPanel>
+                <TextBlock Text="⚠️ Temporary File Detected" FontWeight="Bold" Foreground="DarkOrange" Margin="0,0,0,5"/>
+                <TextBlock Text="You are managing tags for a file from a temporary search results folder." 
+                           TextWrapping="Wrap" Margin="0,0,0,10"/>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Temp File:" FontWeight="Bold" Margin="0,0,10,3"/>
+                    <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TempFilePathTextBlock" FontFamily="Consolas" FontSize="11" Foreground="Gray"/>
+                    
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Original File:" FontWeight="Bold" Margin="0,0,10,3"/>
+                    <TextBlock Grid.Row="1" Grid.Column="1" x:Name="OriginalFilePathTextBlock" FontFamily="Consolas" FontSize="11" Foreground="DarkBlue"/>
+                    
+                    <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" 
+                               Text="📌 All tag changes will be applied to the original file in its actual location." 
+                               FontWeight="Bold" Foreground="DarkGreen" Margin="0,10,0,0" TextWrapping="Wrap"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
         <!-- Current Tags -->
-        <TextBlock Grid.Row="2" Text="Current Tags:" FontWeight="Bold" Margin="0,0,0,5"/>
-        <ListBox Grid.Row="2" x:Name="CurrentTagsListBox" Margin="0,25,0,0" 
+        <TextBlock Grid.Row="3" Text="Current Tags:" FontWeight="Bold" Margin="0,0,0,5"/>
+        <ListBox Grid.Row="3" x:Name="CurrentTagsListBox" Margin="0,25,0,0" 
                  SelectionChanged="CurrentTagsListBox_SelectionChanged">
             <ListBox.ContextMenu>
                 <ContextMenu>
@@ -31,13 +66,13 @@
         </ListBox>
 
         <!-- Add Tags Section -->
-        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,15,0,5">
+        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,15,0,5">
             <TextBlock Text="Add Tags:" FontWeight="Bold" VerticalAlignment="Center"/>
             <Button x:Name="RemoveSelectedTagButton" Content="Remove Selected" 
                     Click="RemoveSelectedTag_Click" Margin="20,0,0,0" IsEnabled="False"/>
         </StackPanel>
 
-        <Grid Grid.Row="4">
+        <Grid Grid.Row="5">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
@@ -61,7 +96,7 @@
         </Grid>
 
         <!-- Buttons -->
-        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
             <Button x:Name="AddSelectedTagsButton" Content="Add Selected Tags" Click="AddSelectedTags_Click" Margin="0,0,10,0"/>
             <Button x:Name="SaveButton" Content="Save" Click="Save_Click" IsDefault="True"/>
             <Button x:Name="CancelButton" Content="Cancel" Click="Cancel_Click" IsCancel="True"/>

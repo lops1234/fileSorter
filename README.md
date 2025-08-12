@@ -7,12 +7,15 @@ A Windows .NET 8 WPF application for tagging files and organizing them with meta
 - **System Tray Application**: Runs in the background and stays in the taskbar
 - **Distributed SQLite Database**: Main database + per-directory databases for scalable storage
 - **Windows Explorer Integration**: Right-click context menus for managing tags
+- **🏷️ Tag from Temp Files**: Add/manage tags directly from temporary search result folders
 - **Directory Watching**: Configure which directories to enable tagging for
 - **Cross-Directory Tag Management**: Use tags from any watched directory
 - **Intelligent Tag Synchronization**: Automatic sync between directory and main databases
 - **Smart Tag Search**: Autocomplete search with existing tags only
 - **Manual Search Control**: Search files only when requested, not automatically loaded
 - **File Filtering**: Filter files by tags both in the app and in Explorer
+- **Advanced Search Syntax**: Boolean logic with AND, OR, NOT, and grouping operators
+- **Temporary Results Caching**: Smart caching avoids re-copying unchanged search results
 
 ## Getting Started
 
@@ -110,6 +113,8 @@ File Tagger supports powerful search syntax for finding files with complex tag c
 - Click "Open in Explorer" to copy all search result files to a temporary folder and open it in Explorer
   - **Smart Caching**: If search parameters haven't changed, opens existing results without re-copying files
   - **Auto-Cancellation**: New searches automatically cancel any ongoing file copying operations
+  - **Tag from Temp Files**: Right-click any file in the temp folder to add/manage tags - they apply to the original files!
+  - **Works with Untagged Files**: Add tags to previously untagged files directly from temp directories
 - File copying operations can be cancelled by performing new searches (Search, Search All, Clear)
 - Right-click on any file to:
   - Open the file
@@ -151,6 +156,47 @@ When you click "Open in Explorer", File Tagger:
 - **Error reporting**: Know immediately if any files couldn't be copied
 
 **Note**: These are copies of your files - the originals remain in their original locations untouched.
+
+#### 🏷️ Tag Management from Temporary Files
+
+**Revolutionary Feature**: You can add and manage tags directly from temporary search result folders!
+
+**How It Works:**
+1. **Open search results** in Explorer using "Open in Explorer" button
+2. **Right-click any file** in the temporary folder
+3. **Select "Manage Tags"** from the context menu
+4. **Add/remove tags** using the tag management window
+5. **Tags are applied to the original files** in their actual locations
+
+**Smart File Mapping:**
+- File Tagger maintains a mapping between temporary copies and original files
+- Works with both **tagged** and **untagged** files
+- Handles **duplicate filenames** automatically (file_1.txt → file.txt)
+- Uses **three-tier fallback system** for robust file mapping:
+  1. **Direct mapping** from recent copy operations
+  2. **Search cache** from recent search parameters  
+  3. **Database lookup** of all files in watched directories
+
+**Visual Feedback:**
+When managing tags for a temp file, the tag management window displays:
+- **⚠️ Temporary File Detected** information panel
+- **Temp file path** (grayed out)
+- **Original file path** (highlighted in blue)
+- **Clear confirmation** that changes apply to the original file
+
+**Use Cases:**
+- **Quick tagging** after search operations
+- **Bulk tagging** of search results
+- **First-time tagging** of previously untagged files
+- **Organizing files** without navigating through directory structures
+
+**Performance Features:**
+- **Smart caching**: Re-opening same search results skips file copying
+- **Instant Explorer access**: Open multiple Explorer windows for same results
+- **Automatic cleanup**: Temp files deleted when application closes
+- **Cancellation support**: New searches cancel ongoing copy operations
+
+
 
 ### System Tray Features
 

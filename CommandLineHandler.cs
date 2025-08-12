@@ -37,14 +37,31 @@ namespace FileTagger
             try
             {
                 if (!File.Exists(filePath)) return false;
-                if (!ShellIntegration.IsInWatchedDirectory(filePath))
+                
+                // Check if this is a temp file - if so, get the original file path
+                string originalFilePath = filePath;
+                if (TempResultsManager.Instance.IsInTempDirectory(filePath))
+                {
+                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePath);
+                    if (!string.IsNullOrEmpty(mappedPath))
+                    {
+                        originalFilePath = mappedPath;
+                    }
+                    else
+                    {
+                        MessageBox.Show("Cannot find original file location for this temporary file.", 
+                            "File Tagger Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return true;
+                    }
+                }
+                else if (!ShellIntegration.IsInWatchedDirectory(filePath))
                 {
                     MessageBox.Show("This file is not in a watched directory. Please add the directory to File Tagger settings first.", 
                         "File Tagger", MessageBoxButton.OK, MessageBoxImage.Information);
                     return true;
                 }
 
-                var tagWindow = new TagManagementWindow(filePath);
+                var tagWindow = new TagManagementWindow(originalFilePath);
                 tagWindow.ShowDialog();
                 return true;
             }
@@ -61,18 +78,37 @@ namespace FileTagger
             {
                 if (!File.Exists(filePath)) return false;
 
+                // Check if this is a temp file - if so, get the original file path
+                string originalFilePath = filePath;
+                string displayNote = "";
+                if (TempResultsManager.Instance.IsInTempDirectory(filePath))
+                {
+                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePath);
+                    if (!string.IsNullOrEmpty(mappedPath))
+                    {
+                        originalFilePath = mappedPath;
+                        displayNote = $"\n\n(Viewing tags for original file: {Path.GetFileName(originalFilePath)})";
+                    }
+                    else
+                    {
+                        MessageBox.Show("Cannot find original file location for this temporary file.", 
+                            "File Tagger Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return true;
+                    }
+                }
+
                 var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
-                var fileRecord = allFiles.FirstOrDefault(f => f.FullPath == filePath);
+                var fileRecord = allFiles.FirstOrDefault(f => f.FullPath == originalFilePath);
 
                 if (fileRecord == null || !fileRecord.Tags.Any())
                 {
-                    MessageBox.Show($"No tags found for:\n{Path.GetFileName(filePath)}", 
+                    MessageBox.Show($"No tags found for:\n{Path.GetFileName(originalFilePath)}{displayNote}", 
                         "File Tags", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
                 else
                 {
                     var tagsText = string.Join("\n• ", fileRecord.Tags);
-                    MessageBox.Show($"Tags for {fileRecord.FileName}:\n\n• {tagsText}", 
+                    MessageBox.Show($"Tags for {fileRecord.FileName}:\n\n• {tagsText}{displayNote}", 
                         "File Tags", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
                 return true;
