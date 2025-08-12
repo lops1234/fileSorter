@@ -20,6 +20,7 @@ A Windows .NET 8 WPF application for tagging files and organizing them with meta
 
 - Windows 10 or later
 - .NET 8 Runtime
+- Minimum screen resolution: 1200x900 for optimal viewing (windows are pre-sized for comfortable use)
 
 ### Installation
 
@@ -40,14 +41,27 @@ A Windows .NET 8 WPF application for tagging files and organizing them with meta
    - Go to the "Settings" tab
    - Click "Add Directory" to select folders where you want to enable tagging
 
-2. **Create Tags**:
+2. **Create Tags** (Optional - you can also create tags while tagging files):
    - Go to the "Tag Management" tab
    - Enter a tag name and optional description
-   - Click "Create Tag"
+   - Click "Create Tag" to create standalone tags (available for use immediately)
+   - Standalone tags will have 0 usage count until you attach them to files
 
 ### Using the Application
 
 #### Adding Tags to Files
+
+**Creating Tags:**
+
+There are multiple ways to create tags:
+
+1. **Standalone Tags (No Files Required)**:
+   - Main Application → "Tag Management" tab → Enter name and description → "Create Tag"
+   - Creates tags in all watched directories for immediate use
+
+2. **While Tagging Files**:
+   - In tag management window: "Create & Add" (creates and attaches to current file)
+   - In tag management window: "Create Only" (creates without attaching to current file)
 
 **Method 1: Through Windows Explorer**
 - Right-click on any file in a watched directory

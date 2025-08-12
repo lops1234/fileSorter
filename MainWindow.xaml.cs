@@ -236,6 +236,8 @@ namespace FileTagger
                 return;
             }
 
+            var tagDescription = TagDescriptionTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagDescriptionTextBox.Text?.Trim();
+
             var existingTags = DatabaseManager.Instance.GetAllAvailableTags();
             if (existingTags.Any(t => t.Name.Equals(tagName, StringComparison.OrdinalIgnoreCase)))
             {
@@ -243,13 +245,35 @@ namespace FileTagger
                 return;
             }
 
-            MessageBox.Show("To create tags, add them to files in watched directories using the context menu.", 
-                "Tag Creation", MessageBoxButton.OK, MessageBoxImage.Information);
+            var activeDirectories = DatabaseManager.Instance.GetAllActiveDirectories();
+            if (!activeDirectories.Any())
+            {
+                MessageBox.Show("No directories are configured for tagging. Please add directories in the Settings tab first.", 
+                    "No Directories", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
 
-            NewTagTextBox.Text = "Enter new tag name";
-            NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
-            TagDescriptionTextBox.Text = "Tag description (optional)";
-            TagDescriptionTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+            try
+            {
+                // Create standalone tag in all active directories
+                DatabaseManager.Instance.CreateStandaloneTagInAllDirectories(tagName, tagDescription);
+                
+                MessageBox.Show($"Tag '{tagName}' created successfully in all watched directories!", 
+                    "Tag Created", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                // Clear input fields
+                NewTagTextBox.Text = "Enter new tag name";
+                NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+                TagDescriptionTextBox.Text = "Tag description (optional)";
+                TagDescriptionTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+                
+                // Refresh tags display
+                LoadTags();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error creating tag: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void DeleteTag_Click(object sender, RoutedEventArgs e)

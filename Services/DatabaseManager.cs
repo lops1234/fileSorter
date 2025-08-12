@@ -253,6 +253,65 @@ namespace FileTagger.Services
         }
 
         /// <summary>
+        /// Create a standalone tag in a specific directory (without attaching to a file)
+        /// </summary>
+        public void CreateStandaloneTag(string directoryPath, string tagName, string tagDescription = "")
+        {
+            if (string.IsNullOrEmpty(directoryPath) || string.IsNullOrEmpty(tagName))
+                return;
+
+            using var dirDb = GetDirectoryDb(directoryPath);
+
+            // Check if tag already exists
+            var existingTag = dirDb.LocalTags.FirstOrDefault(t => t.Name == tagName);
+            if (existingTag != null)
+            {
+                // Update description if provided
+                if (!string.IsNullOrEmpty(tagDescription))
+                {
+                    existingTag.Description = tagDescription;
+                    existingTag.LastUsedAt = DateTime.UtcNow;
+                    dirDb.SaveChanges();
+                }
+                return;
+            }
+
+            // Create new tag
+            var tag = new LocalTag
+            {
+                Name = tagName,
+                Description = tagDescription,
+                LastUsedAt = DateTime.UtcNow
+            };
+            dirDb.LocalTags.Add(tag);
+            dirDb.SaveChanges();
+
+            // Sync this directory's tags to main database
+            SynchronizeDirectoryTags(directoryPath);
+        }
+
+        /// <summary>
+        /// Create a standalone tag in all active directories
+        /// </summary>
+        public void CreateStandaloneTagInAllDirectories(string tagName, string tagDescription = "")
+        {
+            var activeDirectories = GetAllActiveDirectories();
+            
+            foreach (var directoryPath in activeDirectories)
+            {
+                try
+                {
+                    CreateStandaloneTag(directoryPath, tagName, tagDescription);
+                }
+                catch
+                {
+                    // Skip directories with issues
+                    continue;
+                }
+            }
+        }
+
+        /// <summary>
         /// Add a tag to a file in a specific directory
         /// </summary>
         public void AddTagToFile(string filePath, string tagName, string tagDescription = "")

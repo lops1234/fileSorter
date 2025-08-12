@@ -132,6 +132,36 @@ namespace FileTagger.Windows
             }
         }
 
+        private void CreateOnlyTag_Click(object sender, RoutedEventArgs e)
+        {
+            var tagName = NewTagTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : NewTagTextBox.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(tagName))
+            {
+                MessageBox.Show("Please enter a tag name.", "Invalid Input", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var directoryPath = Path.GetDirectoryName(_filePath);
+                if (!string.IsNullOrEmpty(directoryPath))
+                {
+                    DatabaseManager.Instance.CreateStandaloneTag(directoryPath, tagName);
+                    
+                    MessageBox.Show($"Tag '{tagName}' created successfully!", "Tag Created", 
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                    
+                    NewTagTextBox.Text = "Create new tag";
+                    NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+                    LoadAvailableTags();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error creating tag: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private void AddSelectedTags_Click(object sender, RoutedEventArgs e)
         {
             if (AvailableTagsListBox.SelectedItems.Count == 0)
