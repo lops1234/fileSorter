@@ -51,6 +51,8 @@
 
                     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="RefreshContextMenusButton" Content="Refresh Context Menus" Click="RefreshContextMenus_Click" Margin="0,0,10,0"/>
+                        <Button x:Name="DiagnoseContextMenusButton" Content="Diagnose Context Menus" Click="DiagnoseContextMenus_Click" Margin="0,0,10,0" 
+                                ToolTip="Show diagnostic information about context menu registration"/>
                         <Button x:Name="SaveSettingsButton" Content="Save Settings" Click="SaveSettings_Click"/>
                     </StackPanel>
                 </Grid>

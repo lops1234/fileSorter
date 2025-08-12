@@ -22,6 +22,13 @@ namespace FileTagger
             {
                 var executablePath = GetExecutablePath();
                 
+                // Validate executable path exists
+                if (string.IsNullOrEmpty(executablePath) || !File.Exists(executablePath))
+                {
+                    System.Diagnostics.Debug.WriteLine($"Warning: Executable path not found or invalid: {executablePath}");
+                    return;
+                }
+                
                 // If path hasn't changed and menus are already registered, skip
                 if (_lastRegisteredExecutablePath == executablePath && AreContextMenusRegistered())
                 {
@@ -89,11 +96,27 @@ namespace FileTagger
 
         private static string GetExecutablePath()
         {
-            var executablePath = Assembly.GetExecutingAssembly().Location;
-            if (executablePath.EndsWith(".dll"))
+            // For single-file deployments, Assembly.Location returns empty string
+            // Use Environment.ProcessPath which works for both single-file and regular deployments
+            var executablePath = Environment.ProcessPath;
+            
+            if (string.IsNullOrEmpty(executablePath))
             {
-                executablePath = executablePath.Replace(".dll", ".exe");
+                // Fallback for older .NET versions or unusual deployment scenarios
+                executablePath = Assembly.GetExecutingAssembly().Location;
+                if (executablePath.EndsWith(".dll"))
+                {
+                    executablePath = executablePath.Replace(".dll", ".exe");
+                }
             }
+            
+            // If still empty, try using AppContext.BaseDirectory + process name
+            if (string.IsNullOrEmpty(executablePath))
+            {
+                var processName = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
+                executablePath = Path.Combine(AppContext.BaseDirectory, processName + ".exe");
+            }
+            
             return executablePath;
         }
 
@@ -203,6 +226,28 @@ namespace FileTagger
             catch
             {
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Get diagnostic information about context menu registration
+        /// </summary>
+        public static string GetDiagnosticInfo()
+        {
+            try
+            {
+                var executablePath = GetExecutablePath();
+                var isRegistered = AreContextMenusRegistered();
+                var fileExists = File.Exists(executablePath);
+                
+                return $"Executable Path: {executablePath}\n" +
+                       $"File Exists: {fileExists}\n" +
+                       $"Context Menus Registered: {isRegistered}\n" +
+                       $"Last Registered Path: {_lastRegisteredExecutablePath}";
+            }
+            catch (Exception ex)
+            {
+                return $"Error getting diagnostic info: {ex.Message}";
             }
         }
     }

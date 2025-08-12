@@ -205,6 +205,19 @@ namespace FileTagger
             }
         }
 
+        private void DiagnoseContextMenus_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var diagnosticInfo = ShellIntegration.GetDiagnosticInfo();
+                MessageBox.Show(diagnosticInfo, "Context Menu Diagnostics", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error getting diagnostic info: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
 
 
         private void SaveSettings_Click(object sender, RoutedEventArgs e)
