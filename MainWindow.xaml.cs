@@ -20,7 +20,7 @@ namespace FileTagger
             InitializeComponent();
             LoadDirectories();
             LoadTags();
-            LoadFiles();
+            // Don't auto-load files anymore - only when search is pressed
             LoadTagFilter();
         }
 
@@ -104,7 +104,6 @@ namespace FileTagger
                     LoadDirectories();
                     LoadTags();
                     LoadTagFilter();
-                    LoadFiles();
                 }
                 else
                 {
@@ -126,7 +125,6 @@ namespace FileTagger
                     LoadDirectories();
                     LoadTags();
                     LoadTagFilter();
-                    LoadFiles();
                 }
             }
         }
@@ -214,7 +212,6 @@ namespace FileTagger
                     DatabaseManager.Instance.SynchronizeAllTags();
                     LoadTags();
                     LoadTagFilter();
-                    LoadFiles();
                 }
             }
         }
@@ -228,9 +225,14 @@ namespace FileTagger
 
         #region File Browser
 
-        private void LoadFiles()
+        private void LoadFiles(string tagFilter = null)
         {
             var files = DatabaseManager.Instance.GetAllFilesWithTags();
+            
+            if (!string.IsNullOrEmpty(tagFilter))
+            {
+                files = files.Where(f => f.Tags.Any(t => t.Equals(tagFilter, StringComparison.OrdinalIgnoreCase))).ToList();
+            }
             
             var fileViewModels = files.Select(f => new FileViewModel
             {
@@ -245,45 +247,39 @@ namespace FileTagger
 
         private void LoadTagFilter()
         {
-            var tags = DatabaseManager.Instance.GetAllAvailableTags();
-            
-            var filterItems = new List<TagFilterItem> { new TagFilterItem { Name = "All Files" } };
-            filterItems.AddRange(tags.Select(t => new TagFilterItem { Name = t.Name }));
-            
-            TagFilterComboBox.ItemsSource = filterItems;
-            TagFilterComboBox.DisplayMemberPath = "Name";
-            TagFilterComboBox.SelectedIndex = 0;
+            // Initialize with placeholder text
+            TagSearchTextBox.Text = "Enter tag name...";
+            TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+            FilesDataGrid.ItemsSource = new List<FileViewModel>(); // Start with empty grid
         }
 
-        private void TagFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private void Search_Click(object sender, RoutedEventArgs e)
         {
-            if (TagFilterComboBox.SelectedItem is TagFilterItem selectedFilter)
+            var tagFilter = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
+            
+            if (string.IsNullOrEmpty(tagFilter))
             {
-                if (selectedFilter.Name == "All Files")
-                {
-                    LoadFiles(); // Show all files
-                }
-                else
-                {
-                    var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
-                    var filteredFiles = allFiles.Where(f => f.Tags.Contains(selectedFilter.Name)).ToList();
-
-                    var fileViewModels = filteredFiles.Select(f => new FileViewModel
-                    {
-                        FileName = f.FileName,
-                        FilePath = f.FullPath,
-                        LastModified = f.LastModified,
-                        TagsString = f.TagsString
-                    }).ToList();
-
-                    FilesDataGrid.ItemsSource = fileViewModels;
-                }
+                LoadFiles(); // Show all files
+            }
+            else
+            {
+                LoadFiles(tagFilter); // Show filtered files
             }
         }
 
         private void ClearFilter_Click(object sender, RoutedEventArgs e)
         {
-            TagFilterComboBox.SelectedIndex = 0;
+            TagSearchTextBox.Text = "Enter tag name...";
+            TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+            FilesDataGrid.ItemsSource = new List<FileViewModel>(); // Clear grid
+            TagSuggestionsPopup.IsOpen = false;
+        }
+
+        private void RefreshAllTags_Click(object sender, RoutedEventArgs e)
+        {
+            DatabaseManager.Instance.SynchronizeAllTags();
+            LoadTags();
+            MessageBox.Show("Tags refreshed successfully!", "Refresh Complete", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         private void OpenFile_Click(object sender, RoutedEventArgs e)
@@ -328,7 +324,10 @@ namespace FileTagger
                 tagWindow.Owner = this;
                 if (tagWindow.ShowDialog() == true)
                 {
-                    LoadFiles(); // Refresh the file list
+                    // Refresh tags when tags are modified
+                    DatabaseManager.Instance.SynchronizeAllTags();
+                    LoadTags();
+                    // Don't auto-refresh file list - user needs to search again
                 }
             }
         }
@@ -360,6 +359,122 @@ namespace FileTagger
                     textBox.Text = "Tag description (optional)";
             }
         }
+
+        #region Tag Search and Autocomplete
+
+        private void TagSearchTextBox_GotFocus(object sender, RoutedEventArgs e)
+        {
+            if (TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray)
+            {
+                TagSearchTextBox.Text = "";
+                TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Black;
+            }
+        }
+
+        private void TagSearchTextBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(TagSearchTextBox.Text))
+            {
+                TagSearchTextBox.Text = "Enter tag name...";
+                TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+            }
+            
+            // Close suggestions when losing focus (unless clicking on suggestions)
+            if (!TagSuggestionsPopup.IsMouseOver)
+            {
+                TagSuggestionsPopup.IsOpen = false;
+            }
+        }
+
+        private void TagSearchTextBox_KeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+            {
+                Search_Click(sender, e);
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
+            if (e.Key == System.Windows.Input.Key.Escape)
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
+            if (e.Key == System.Windows.Input.Key.Down && TagSuggestionsPopup.IsOpen)
+            {
+                if (TagSuggestionsListBox.Items.Count > 0)
+                {
+                    TagSuggestionsListBox.SelectedIndex = 0;
+                    TagSuggestionsListBox.Focus();
+                }
+                return;
+            }
+
+            var searchText = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
+            
+            if (string.IsNullOrEmpty(searchText))
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
+            ShowTagSuggestions(searchText);
+        }
+
+        private void ShowTagSuggestions(string searchText)
+        {
+            var allTags = DatabaseManager.Instance.GetAllAvailableTags();
+            var matchingTags = allTags
+                .Where(t => t.Name.StartsWith(searchText, StringComparison.OrdinalIgnoreCase))
+                .Select(t => t.Name)
+                .Take(10)
+                .ToList();
+
+            if (matchingTags.Any())
+            {
+                TagSuggestionsListBox.ItemsSource = matchingTags;
+                TagSuggestionsPopup.IsOpen = true;
+            }
+            else
+            {
+                TagSuggestionsPopup.IsOpen = false;
+            }
+        }
+
+        private void TagSuggestion_Selected(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (TagSuggestionsListBox.SelectedItem is string selectedTag)
+            {
+                TagSearchTextBox.Text = selectedTag;
+                TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Black;
+                TagSuggestionsPopup.IsOpen = false;
+                TagSearchTextBox.Focus();
+                TagSearchTextBox.CaretIndex = TagSearchTextBox.Text.Length;
+            }
+        }
+
+        private void TagSuggestionsListBox_KeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+            {
+                if (TagSuggestionsListBox.SelectedItem is string selectedTag)
+                {
+                    TagSearchTextBox.Text = selectedTag;
+                    TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Black;
+                    TagSuggestionsPopup.IsOpen = false;
+                    TagSearchTextBox.Focus();
+                    TagSearchTextBox.CaretIndex = TagSearchTextBox.Text.Length;
+                }
+            }
+            else if (e.Key == System.Windows.Input.Key.Escape)
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                TagSearchTextBox.Focus();
+            }
+        }
+
+        #endregion
 
         #endregion
     }

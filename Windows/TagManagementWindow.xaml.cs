@@ -158,6 +158,13 @@ namespace FileTagger.Windows
 
         private void Save_Click(object sender, RoutedEventArgs e)
         {
+            // Ensure tags are synchronized when closing
+            var directoryPath = Path.GetDirectoryName(_filePath);
+            if (!string.IsNullOrEmpty(directoryPath))
+            {
+                DatabaseManager.Instance.SynchronizeDirectoryTags(directoryPath);
+            }
+            
             DialogResult = true;
             Close();
         }

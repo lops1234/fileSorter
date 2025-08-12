@@ -10,6 +10,8 @@ A Windows .NET 8 WPF application for tagging files and organizing them with meta
 - **Directory Watching**: Configure which directories to enable tagging for
 - **Cross-Directory Tag Management**: Use tags from any watched directory
 - **Intelligent Tag Synchronization**: Automatic sync between directory and main databases
+- **Smart Tag Search**: Autocomplete search with existing tags only
+- **Manual Search Control**: Search files only when requested, not automatically loaded
 - **File Filtering**: Filter files by tags both in the app and in Explorer
 
 ## Getting Started
@@ -66,12 +68,16 @@ A Windows .NET 8 WPF application for tagging files and organizing them with meta
 
 **In the Application:**
 - Go to the "File Browser" tab
-- Use the tag filter dropdown to show only files with specific tags
+- Type in the tag search box (with autocomplete suggestions)
+- Click "Search" to filter files by the entered tag
+- Use "Clear" to reset the search
+- Use "Refresh Tags" to update the tag list after adding new tags
 
 **In Windows Explorer:**
 - Right-click on any directory
 - Select "Filter Files by Tags"
-- Choose a tag to filter by and browse the results
+- Type in the tag search box (with autocomplete suggestions)
+- Click "Search" to filter files by the entered tag
 
 ### System Tray Features
 
