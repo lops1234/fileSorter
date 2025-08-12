@@ -26,8 +26,9 @@ namespace FileTagger.Windows
 
         private void InitializeTagSearch()
         {
-            TagSearchTextBox.Text = "Enter tag name...";
+            TagSearchTextBox.Text = "Enter search query...";
             TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+            SearchStatusTextBlock.Text = "";
             FilesDataGrid.ItemsSource = new List<DirectoryFileViewModel>(); // Start with empty grid
             FileCountTextBlock.Text = "0 files";
         }
@@ -82,41 +83,81 @@ namespace FileTagger.Windows
             }
         }
 
-        private void ShowFilteredFiles(string tagFilter = null)
+        private void ShowFilteredFiles(string searchQuery = null)
         {
-            var filteredFiles = _allFiles;
-
-            if (!string.IsNullOrEmpty(tagFilter))
+            try
             {
-                filteredFiles = _allFiles.Where(f => !string.IsNullOrEmpty(f.TagsString) && 
-                    f.TagsString.Split(',').Select(t => t.Trim()).Any(t => t.Equals(tagFilter, StringComparison.OrdinalIgnoreCase))).ToList();
-            }
+                var filteredFiles = _allFiles;
 
-            FilesDataGrid.ItemsSource = filteredFiles.OrderBy(f => f.FileName).ToList();
-            FileCountTextBlock.Text = $"{filteredFiles.Count} files";
+                if (!string.IsNullOrEmpty(searchQuery))
+                {
+                    var parseResult = TagSearchParser.ParseQuery(searchQuery);
+                    
+                    if (!parseResult.IsValid)
+                    {
+                        SearchStatusTextBlock.Text = $"Error: {parseResult.ErrorMessage}";
+                        SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+                        return;
+                    }
+                    
+                    filteredFiles = _allFiles.Where(f => 
+                    {
+                        if (string.IsNullOrEmpty(f.TagsString))
+                            return false;
+                            
+                        var fileTags = f.TagsString.Split(',').Select(tag => tag.Trim()).Where(tag => !string.IsNullOrEmpty(tag)).ToList();
+                        return TagSearchParser.EvaluateQuery(searchQuery, fileTags);
+                    }).ToList();
+                    
+                    SearchStatusTextBlock.Text = $"Found {filteredFiles.Count} files matching: {parseResult.NormalizedQuery}";
+                    SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Green;
+                }
+                else
+                {
+                    SearchStatusTextBlock.Text = "";
+                }
+
+                FilesDataGrid.ItemsSource = filteredFiles.OrderBy(f => f.FileName).ToList();
+                FileCountTextBlock.Text = $"{filteredFiles.Count} files";
+            }
+            catch (Exception)
+            {
+                SearchStatusTextBlock.Text = "Error filtering files";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+                // Still show all files on error
+                FilesDataGrid.ItemsSource = _allFiles.OrderBy(f => f.FileName).ToList();
+                FileCountTextBlock.Text = $"{_allFiles.Count} files";
+            }
         }
 
         private void Search_Click(object sender, RoutedEventArgs e)
         {
-            var tagFilter = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
+            var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
             
-            if (string.IsNullOrEmpty(tagFilter))
+            if (string.IsNullOrEmpty(searchQuery))
             {
                 ShowFilteredFiles(); // Show all files
             }
             else
             {
-                ShowFilteredFiles(tagFilter); // Show filtered files
+                ShowFilteredFiles(searchQuery); // Show filtered files
             }
         }
 
         private void ClearFilter_Click(object sender, RoutedEventArgs e)
         {
-            TagSearchTextBox.Text = "Enter tag name...";
+            TagSearchTextBox.Text = "Enter search query...";
             TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+            SearchStatusTextBlock.Text = "";
             FilesDataGrid.ItemsSource = new List<DirectoryFileViewModel>(); // Clear grid
             FileCountTextBlock.Text = "0 files";
             TagSuggestionsPopup.IsOpen = false;
+        }
+
+        private void SearchHelp_Click(object sender, RoutedEventArgs e)
+        {
+            var helpText = TagSearchParser.GetSearchSyntaxHelp();
+            MessageBox.Show(helpText, "Search Syntax Help", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         private void Refresh_Click(object sender, RoutedEventArgs e)

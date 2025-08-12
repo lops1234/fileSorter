@@ -298,52 +298,79 @@ namespace FileTagger
 
         #region File Browser
 
-        private void LoadFiles(string tagFilter = null)
+        private void LoadFiles(string searchQuery = null)
         {
-            var files = DatabaseManager.Instance.GetAllFilesWithTags();
-            
-            if (!string.IsNullOrEmpty(tagFilter))
+            try
             {
-                files = files.Where(f => f.Tags.Any(t => t.Equals(tagFilter, StringComparison.OrdinalIgnoreCase))).ToList();
-            }
-            
-            var fileViewModels = files.Select(f => new FileViewModel
-            {
-                FileName = f.FileName,
-                FilePath = f.FullPath,
-                LastModified = f.LastModified,
-                TagsString = f.TagsString
-            }).ToList();
+                var files = DatabaseManager.Instance.GetAllFilesWithTags();
+                
+                if (!string.IsNullOrEmpty(searchQuery))
+                {
+                    var parseResult = TagSearchParser.ParseQuery(searchQuery);
+                    
+                    if (!parseResult.IsValid)
+                    {
+                        SearchStatusTextBlock.Text = $"Error: {parseResult.ErrorMessage}";
+                        SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+                        return;
+                    }
+                    
+                    files = files.Where(f => TagSearchParser.EvaluateQuery(searchQuery, f.Tags)).ToList();
+                    
+                    SearchStatusTextBlock.Text = $"Found {files.Count} files matching: {parseResult.NormalizedQuery}";
+                    SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Green;
+                }
+                else
+                {
+                    SearchStatusTextBlock.Text = "";
+                }
+                
+                var fileViewModels = files.Select(f => new FileViewModel
+                {
+                    FileName = f.FileName,
+                    FilePath = f.FullPath,
+                    LastModified = f.LastModified,
+                    TagsString = f.TagsString
+                }).ToList();
 
-            FilesDataGrid.ItemsSource = fileViewModels;
+                FilesDataGrid.ItemsSource = fileViewModels;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading files: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                SearchStatusTextBlock.Text = "Error loading files";
+                SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Red;
+            }
         }
 
         private void LoadTagFilter()
         {
             // Initialize with placeholder text
-            TagSearchTextBox.Text = "Enter tag name...";
+            TagSearchTextBox.Text = "Enter search query...";
             TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+            SearchStatusTextBlock.Text = "";
             FilesDataGrid.ItemsSource = new List<FileViewModel>(); // Start with empty grid
         }
 
         private void Search_Click(object sender, RoutedEventArgs e)
         {
-            var tagFilter = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
+            var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
             
-            if (string.IsNullOrEmpty(tagFilter))
+            if (string.IsNullOrEmpty(searchQuery))
             {
                 LoadFiles(); // Show all files
             }
             else
             {
-                LoadFiles(tagFilter); // Show filtered files
+                LoadFiles(searchQuery); // Show filtered files
             }
         }
 
         private void ClearFilter_Click(object sender, RoutedEventArgs e)
         {
-            TagSearchTextBox.Text = "Enter tag name...";
+            TagSearchTextBox.Text = "Enter search query...";
             TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+            SearchStatusTextBlock.Text = "";
             FilesDataGrid.ItemsSource = new List<FileViewModel>(); // Clear grid
             TagSuggestionsPopup.IsOpen = false;
         }
@@ -353,6 +380,12 @@ namespace FileTagger
             DatabaseManager.Instance.SynchronizeAllTags();
             LoadTags();
             MessageBox.Show("Tags refreshed successfully!", "Refresh Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        private void SearchHelp_Click(object sender, RoutedEventArgs e)
+        {
+            var helpText = TagSearchParser.GetSearchSyntaxHelp();
+            MessageBox.Show(helpText, "Search Syntax Help", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         private void OpenFile_Click(object sender, RoutedEventArgs e)
@@ -497,9 +530,18 @@ namespace FileTagger
 
         private void ShowTagSuggestions(string searchText)
         {
+            // Extract the current tag being typed from complex query
+            var currentTag = ExtractCurrentTag(searchText, TagSearchTextBox.CaretIndex);
+            
+            if (string.IsNullOrWhiteSpace(currentTag))
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
             var allTags = DatabaseManager.Instance.GetAllAvailableTags();
             var matchingTags = allTags
-                .Where(t => t.Name.StartsWith(searchText, StringComparison.OrdinalIgnoreCase))
+                .Where(t => t.Name.StartsWith(currentTag, StringComparison.OrdinalIgnoreCase))
                 .Select(t => t.Name)
                 .Take(10)
                 .ToList();
@@ -515,16 +557,112 @@ namespace FileTagger
             }
         }
 
+        private string ExtractCurrentTag(string query, int caretPosition)
+        {
+            if (string.IsNullOrWhiteSpace(query) || caretPosition < 0)
+                return string.Empty;
+
+            // Ensure caret position is within bounds
+            caretPosition = Math.Min(caretPosition, query.Length);
+
+            // Find the start and end of the current tag around the caret position
+            int start = caretPosition;
+            int end = caretPosition;
+
+            // Move start backwards to find beginning of current tag
+            while (start > 0 && start - 1 < query.Length && !IsTagDelimiter(query[start - 1]))
+            {
+                start--;
+            }
+
+            // Move end forwards to find end of current tag
+            while (end < query.Length && !IsTagDelimiter(query[end]))
+            {
+                end++;
+            }
+
+            if (start >= end || start >= query.Length)
+                return string.Empty;
+
+            var currentTag = query.Substring(start, end - start).Trim();
+            
+            // Remove leading minus sign for excluded tags
+            if (currentTag.StartsWith("-"))
+                currentTag = currentTag.Substring(1);
+
+            return currentTag;
+        }
+
+        private bool IsTagDelimiter(char c)
+        {
+            return c == ' ' || c == '&' || c == '|' || c == '(' || c == ')';
+        }
+
         private void TagSuggestion_Selected(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
             if (TagSuggestionsListBox.SelectedItem is string selectedTag)
             {
+                InsertTagIntoQuery(selectedTag);
+            }
+        }
+
+        private void InsertTagIntoQuery(string selectedTag)
+        {
+            var currentText = TagSearchTextBox.Text;
+            var caretPosition = TagSearchTextBox.CaretIndex;
+            
+            if (TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray)
+            {
+                // Replace placeholder text
                 TagSearchTextBox.Text = selectedTag;
                 TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Black;
-                TagSuggestionsPopup.IsOpen = false;
-                TagSearchTextBox.Focus();
-                TagSearchTextBox.CaretIndex = TagSearchTextBox.Text.Length;
             }
+            else
+            {
+                // Ensure caret position is within bounds
+                caretPosition = Math.Min(caretPosition, currentText.Length);
+                
+                // Find the current tag being edited and replace it
+                var currentTag = ExtractCurrentTag(currentText, caretPosition);
+                if (!string.IsNullOrEmpty(currentTag))
+                {
+                    // Find start position of current tag
+                    int start = caretPosition;
+                    while (start > 0 && start - 1 < currentText.Length && !IsTagDelimiter(currentText[start - 1]))
+                    {
+                        start--;
+                    }
+                    
+                    // Find end position of current tag
+                    int end = caretPosition;
+                    while (end < currentText.Length && !IsTagDelimiter(currentText[end]))
+                    {
+                        end++;
+                    }
+                    
+                    // Preserve any minus prefix for exclusion
+                    var prefix = "";
+                    if (start < currentText.Length && currentText[start] == '-')
+                    {
+                        prefix = "-";
+                        start++; // Skip the minus when calculating replacement
+                    }
+                    
+                    // Replace the current tag
+                    var newText = currentText.Substring(0, start) + prefix + selectedTag + currentText.Substring(end);
+                    TagSearchTextBox.Text = newText;
+                    TagSearchTextBox.CaretIndex = start + prefix.Length + selectedTag.Length;
+                }
+                else
+                {
+                    // Just append the tag
+                    TagSearchTextBox.Text = currentText + " " + selectedTag;
+                    TagSearchTextBox.CaretIndex = TagSearchTextBox.Text.Length;
+                }
+            }
+            
+            TagSuggestionsPopup.IsOpen = false;
+            TagSearchTextBox.Focus();
         }
 
         private void TagSuggestionsListBox_KeyUp(object sender, System.Windows.Input.KeyEventArgs e)
@@ -533,11 +671,7 @@ namespace FileTagger
             {
                 if (TagSuggestionsListBox.SelectedItem is string selectedTag)
                 {
-                    TagSearchTextBox.Text = selectedTag;
-                    TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Black;
-                    TagSuggestionsPopup.IsOpen = false;
-                    TagSearchTextBox.Focus();
-                    TagSearchTextBox.CaretIndex = TagSearchTextBox.Text.Length;
+                    InsertTagIntoQuery(selectedTag);
                 }
             }
             else if (e.Key == System.Windows.Input.Key.Escape)

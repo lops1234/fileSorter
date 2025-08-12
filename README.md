@@ -64,20 +64,39 @@ A Windows .NET 8 WPF application for tagging files and organizing them with meta
 - Right-click on any file in a watched directory
 - Select "View File Tags" to see all tags assigned to that file
 
+#### Advanced Tag Search
+
+File Tagger supports powerful search syntax for finding files with complex tag combinations:
+
+**Search Operators:**
+- **Spaces or `&`** = AND: `photo work` or `photo & work`
+- **`|`** = OR: `image | video`
+- **`()`** = Grouping: `(urgent | important) & project`
+- **`-`** = Exclude: `-archived document`
+
+**Search Examples:**
+- `photo work` - Files with BOTH "photo" AND "work" tags
+- `image | video` - Files with EITHER "image" OR "video" tags
+- `(urgent | important) & project` - Files with ("urgent" OR "important") AND "project"
+- `document -archived` - Files with "document" tag but NOT "archived" tag
+- `(photo | image) & work -temp` - Files with ("photo" OR "image") AND "work" but NOT "temp"
+
 #### Filtering Files by Tags
 
 **In the Application:**
 - Go to the "File Browser" tab
-- Type in the tag search box (with autocomplete suggestions)
-- Click "Search" to filter files by the entered tag
+- Type advanced search query in the search box (autocomplete will show available tags)
+- Click "Search" to filter files matching the query
+- Click "?" for syntax help
 - Use "Clear" to reset the search
 - Use "Refresh Tags" to update the tag list after adding new tags
 
 **In Windows Explorer:**
 - Right-click on any directory
 - Select "Filter Files by Tags"
-- Type in the tag search box (with autocomplete suggestions)
-- Click "Search" to filter files by the entered tag
+- Type advanced search query in the search box (autocomplete will show available tags)
+- Click "Search" to filter files matching the query
+- Click "?" for syntax help
 
 ### System Tray Features
 

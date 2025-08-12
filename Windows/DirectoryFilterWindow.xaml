@@ -18,27 +18,33 @@
                    Foreground="DarkSlateGray" FontFamily="Consolas"/>
 
         <!-- Filter Controls -->
-        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,15">
-            <TextBlock Text="Filter by tag:" VerticalAlignment="Center" Margin="0,0,10,0"/>
-            <TextBox x:Name="TagSearchTextBox" Width="200" 
-                     Text="Enter tag name..." Foreground="Gray" 
-                     GotFocus="TagSearchTextBox_GotFocus" 
-                     LostFocus="TagSearchTextBox_LostFocus"
-                     KeyUp="TagSearchTextBox_KeyUp"/>
-            <Popup x:Name="TagSuggestionsPopup" 
-                   PlacementTarget="{Binding ElementName=TagSearchTextBox}"
-                   Placement="Bottom" 
-                   IsOpen="False"
-                   StaysOpen="False">
-                <Border Background="White" BorderBrush="Gray" BorderThickness="1" MaxHeight="200">
-                    <ListBox x:Name="TagSuggestionsListBox" 
-                             MouseLeftButtonUp="TagSuggestion_Selected"
-                             KeyUp="TagSuggestionsListBox_KeyUp"/>
-                </Border>
-            </Popup>
-            <Button x:Name="SearchButton" Content="Search" Click="Search_Click" Margin="10,0,0,0"/>
-            <Button x:Name="ClearFilterButton" Content="Clear" Click="ClearFilter_Click" Margin="5,0,0,0"/>
-            <Button x:Name="RefreshButton" Content="Refresh" Click="Refresh_Click" Margin="5,0,0,0"/>
+        <StackPanel Grid.Row="2" Orientation="Vertical" Margin="0,0,0,15">
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                <TextBlock Text="Advanced Tag Search:" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                <TextBox x:Name="TagSearchTextBox" Width="300" 
+                         Text="Enter search query..." Foreground="Gray" 
+                         GotFocus="TagSearchTextBox_GotFocus" 
+                         LostFocus="TagSearchTextBox_LostFocus"
+                         KeyUp="TagSearchTextBox_KeyUp"/>
+                <Popup x:Name="TagSuggestionsPopup" 
+                       PlacementTarget="{Binding ElementName=TagSearchTextBox}"
+                       Placement="Bottom" 
+                       IsOpen="False"
+                       StaysOpen="False">
+                    <Border Background="White" BorderBrush="Gray" BorderThickness="1" MaxHeight="200">
+                        <ListBox x:Name="TagSuggestionsListBox" 
+                                 MouseLeftButtonUp="TagSuggestion_Selected"
+                                 KeyUp="TagSuggestionsListBox_KeyUp"/>
+                    </Border>
+                </Popup>
+                <Button x:Name="SearchButton" Content="Search" Click="Search_Click" Margin="10,0,0,0"/>
+                <Button x:Name="ClearFilterButton" Content="Clear" Click="ClearFilter_Click" Margin="5,0,0,0"/>
+                <Button x:Name="RefreshButton" Content="Refresh" Click="Refresh_Click" Margin="5,0,0,0"/>
+                <Button x:Name="SearchHelpButton" Content="?" Click="SearchHelp_Click" Margin="5,0,0,0" Width="25" ToolTip="Show search syntax help"/>
+            </StackPanel>
+            <TextBlock x:Name="SearchStatusTextBlock" Margin="0,0,0,5" Foreground="Gray" FontSize="11"/>
+            <TextBlock Text="Syntax: 'tag1 tag2' (AND), 'tag1 | tag2' (OR), '(tag1 | tag2) &amp; tag3' (grouping), '-tag' (exclude)" 
+                       Margin="0,0,0,5" Foreground="DarkBlue" FontSize="10" TextWrapping="Wrap"/>
         </StackPanel>
 
         <!-- Files List -->
