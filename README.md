@@ -108,6 +108,8 @@ File Tagger supports powerful search syntax for finding files with complex tag c
 - Click "Search" to filter files matching the query (or find untagged files if search is empty)
 - Click "Search All" to see every file in your watched directories
 - Click "Open in Explorer" to copy all search result files to a temporary folder and open it in Explorer
+  - **Smart Caching**: If search parameters haven't changed, opens existing results without re-copying files
+  - **Auto-Cancellation**: New searches automatically cancel any ongoing file copying operations
 - File copying operations can be cancelled by performing new searches (Search, Search All, Clear)
 - Right-click on any file to:
   - Open the file

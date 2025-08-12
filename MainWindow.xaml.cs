@@ -494,22 +494,38 @@ namespace FileTagger
                 if (string.IsNullOrEmpty(searchQuery))
                     searchQuery = "All files";
 
+                var filePaths = files.Select(f => f.FilePath).ToList();
+
+                // Check if search parameters have changed
+                if (!TempResultsManager.Instance.HasSearchParametersChanged(searchQuery, filePaths))
+                {
+                    // Same search parameters - just open Explorer with existing files
+                    var tempDir = TempResultsManager.Instance.GetTempDirectoryPath();
+                    if (Directory.Exists(tempDir))
+                    {
+                        Process.Start("explorer.exe", $"\"{tempDir}\"");
+                        SearchStatusTextBlock.Text = $"Opened existing search results in Explorer ({files.Count} files)";
+                        SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Green;
+                        return;
+                    }
+                }
+
+                // Different search parameters or no existing temp directory - copy files
                 // Prepare temp directory
-                var tempDir = TempResultsManager.Instance.PrepareTempDirectory();
+                var tempDirPath = TempResultsManager.Instance.PrepareTempDirectory();
 
                 // Create README file first
                 TempResultsManager.Instance.CreateReadmeFile(searchQuery, files.Count);
 
                 // Open Explorer immediately with README
-                Process.Start("explorer.exe", $"\"{tempDir}\"");
+                Process.Start("explorer.exe", $"\"{tempDirPath}\"");
 
                 // Update status to show copying is starting
                 SearchStatusTextBlock.Text = "Copying files to temporary directory... (0/0)";
                 SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
 
                 // Start copying files asynchronously
-                var filePaths = files.Select(f => f.FilePath).ToList();
-                var result = await TempResultsManager.Instance.CopySearchResultsAsync(filePaths, (copied, total) =>
+                var result = await TempResultsManager.Instance.CopySearchResultsAsync(filePaths, searchQuery, (copied, total) =>
                 {
                     // Update progress on UI thread
                     Dispatcher.Invoke(() =>

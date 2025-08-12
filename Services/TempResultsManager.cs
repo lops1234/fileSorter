@@ -19,6 +19,9 @@ namespace FileTagger.Services
         private string _tempDirectoryPath;
         private readonly object _lock = new object();
         private CancellationTokenSource _currentCopyOperation;
+        private string _lastSearchQuery = "";
+        private List<string> _lastFilePaths = new List<string>();
+        private DateTime _lastCopyTime = DateTime.MinValue;
 
         private TempResultsManager()
         {
@@ -81,9 +84,60 @@ namespace FileTagger.Services
         }
 
         /// <summary>
+        /// Check if the search parameters have changed since last copy operation
+        /// </summary>
+        public bool HasSearchParametersChanged(string searchQuery, List<string> filePaths)
+        {
+            lock (_lock)
+            {
+                // Check if query changed
+                if (_lastSearchQuery != (searchQuery ?? ""))
+                    return true;
+
+                // Check if file list changed (compare count and content)
+                if (_lastFilePaths.Count != filePaths.Count)
+                    return true;
+
+                // Compare file paths (order-sensitive)
+                for (int i = 0; i < filePaths.Count; i++)
+                {
+                    if (i >= _lastFilePaths.Count || _lastFilePaths[i] != filePaths[i])
+                        return true;
+                }
+
+                // Check if temp directory exists and has files
+                if (!Directory.Exists(_tempDirectoryPath))
+                    return true;
+
+                var tempFiles = Directory.GetFiles(_tempDirectoryPath, "*", SearchOption.TopDirectoryOnly)
+                    .Where(f => !Path.GetFileName(f).Equals("README.txt", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                // If no files in temp directory (besides README), we need to copy
+                if (tempFiles.Count == 0 && filePaths.Count > 0)
+                    return true;
+
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Update the last search parameters
+        /// </summary>
+        private void UpdateLastSearchParameters(string searchQuery, List<string> filePaths)
+        {
+            lock (_lock)
+            {
+                _lastSearchQuery = searchQuery ?? "";
+                _lastFilePaths = new List<string>(filePaths);
+                _lastCopyTime = DateTime.Now;
+            }
+        }
+
+        /// <summary>
         /// Copy search result files to temp directory asynchronously with cancellation support
         /// </summary>
-        public async Task<(int copiedCount, List<string> errors, bool wasCancelled)> CopySearchResultsAsync(List<string> filePaths, Action<int, int> progressCallback = null)
+        public async Task<(int copiedCount, List<string> errors, bool wasCancelled)> CopySearchResultsAsync(List<string> filePaths, string searchQuery = "", Action<int, int> progressCallback = null)
         {
             return await Task.Run(() =>
             {
@@ -174,6 +228,12 @@ namespace FileTagger.Services
                             _currentCopyOperation = null;
                         }
                     }
+                }
+
+                // Update last search parameters if copy completed successfully (not cancelled)
+                if (!wasCancelled)
+                {
+                    UpdateLastSearchParameters(searchQuery, filePaths);
                 }
 
                 return (copiedCount, errors, wasCancelled);

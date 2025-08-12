@@ -292,8 +292,27 @@ namespace FileTagger.Windows
                 if (string.IsNullOrEmpty(searchQuery))
                     searchQuery = "All files";
 
+                var filePaths = files.Select(f => f.FilePath).ToList();
+                // Include directory context in the query to make it unique
+                var queryWithContext = $"{_directoryPath}|{searchQuery}";
+
+                // Check if search parameters have changed
+                if (!TempResultsManager.Instance.HasSearchParametersChanged(queryWithContext, filePaths))
+                {
+                    // Same search parameters - just open Explorer with existing files
+                    var tempDir = TempResultsManager.Instance.GetTempDirectoryPath();
+                    if (Directory.Exists(tempDir))
+                    {
+                        Process.Start("explorer.exe", $"\"{tempDir}\"");
+                        SearchStatusTextBlock.Text = $"Opened existing search results in Explorer ({files.Count} files)";
+                        SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Green;
+                        return;
+                    }
+                }
+
+                // Different search parameters or no existing temp directory - copy files
                 // Prepare temp directory
-                var tempDir = TempResultsManager.Instance.PrepareTempDirectory();
+                var tempDirPath = TempResultsManager.Instance.PrepareTempDirectory();
 
                 // Create README file first with directory context
                 var readmeContent = $"File Tagger - Directory Search Results\n" +
@@ -307,19 +326,18 @@ namespace FileTagger.Windows
                                    $"This temporary directory will be cleaned up when File Tagger closes.\n\n" +
                                    $"Files will appear here as they are copied...";
 
-                var readmePath = Path.Combine(tempDir, "README.txt");
+                var readmePath = Path.Combine(tempDirPath, "README.txt");
                 File.WriteAllText(readmePath, readmeContent);
 
                 // Open Explorer immediately with README
-                Process.Start("explorer.exe", $"\"{tempDir}\"");
+                Process.Start("explorer.exe", $"\"{tempDirPath}\"");
 
                 // Update status to show copying is starting
                 SearchStatusTextBlock.Text = "Copying files to temporary directory... (0/0)";
                 SearchStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
 
                 // Start copying files asynchronously
-                var filePaths = files.Select(f => f.FilePath).ToList();
-                var result = await TempResultsManager.Instance.CopySearchResultsAsync(filePaths, (copied, total) =>
+                var result = await TempResultsManager.Instance.CopySearchResultsAsync(filePaths, queryWithContext, (copied, total) =>
                 {
                     // Update progress on UI thread
                     Dispatcher.Invoke(() =>
