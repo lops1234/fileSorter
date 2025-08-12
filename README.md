@@ -200,6 +200,24 @@ The application minimizes to the system tray when closed, showing a blue folder 
 - `CommandLineHandler.cs`: Handles context menu command line arguments
 - `MainWindow.xaml/cs`: Main application interface
 
+### Hierarchical Directory System
+
+**Directory Inclusion:**
+- When you add a directory to settings, ALL subdirectories are automatically included for tagging
+- You can tag files anywhere within the directory tree
+
+**Tag Storage Logic:**
+- Tags created in subdirectories are stored in the parent directory's database (the one added in settings)
+- If you have overlapping directories in settings (e.g., `C:\Documents` and `C:\Documents\Photos`):
+  - Files in `C:\Documents\Photos` will have tags stored in BOTH databases
+  - This allows for both broad categorization and specific organization
+  - Search results automatically consolidate tags from all applicable databases
+
+**Database Creation:**
+- New databases are only created for directories explicitly added to settings
+- Subdirectories use their parent's database
+- Each database is stored in a hidden `.filetagger` folder within the directory
+
 ## License
 
 This project is open source and available under the MIT License.

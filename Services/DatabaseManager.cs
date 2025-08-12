@@ -216,6 +216,27 @@ namespace FileTagger.Services
         }
 
         /// <summary>
+        /// Get all watched directories that should contain tags for a given file path
+        /// Returns directories in order from most specific (deepest) to least specific (shallowest)
+        /// </summary>
+        public List<string> GetApplicableDirectoriesForFile(string filePath)
+        {
+            var watchedDirs = GetAllActiveDirectories();
+            var fileDir = Path.GetDirectoryName(filePath);
+            
+            if (string.IsNullOrEmpty(fileDir))
+                return new List<string>();
+
+            // Find all watched directories that contain this file
+            var applicableDirs = watchedDirs
+                .Where(wd => fileDir.StartsWith(wd, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(wd => wd.Length) // Most specific first (deepest directory)
+                .ToList();
+
+            return applicableDirs;
+        }
+
+        /// <summary>
         /// Check if a directory has a specific tag
         /// </summary>
         private bool DirectoryHasTag(string directoryPath, string tagName)
@@ -236,72 +257,81 @@ namespace FileTagger.Services
         /// </summary>
         public void AddTagToFile(string filePath, string tagName, string tagDescription = "")
         {
-            var directoryPath = Path.GetDirectoryName(filePath);
-            if (string.IsNullOrEmpty(directoryPath)) return;
+            // Get all directories that should contain this tag
+            var applicableDirectories = GetApplicableDirectoriesForFile(filePath);
+            
+            if (!applicableDirectories.Any())
+                return;
 
-            var relativePath = Path.GetRelativePath(directoryPath, filePath);
             var fileName = Path.GetFileName(filePath);
 
-            using var dirDb = GetDirectoryDb(directoryPath);
-
-            // Get or create file record
-            var fileRecord = dirDb.LocalFileRecords.FirstOrDefault(f => f.RelativePath == relativePath);
-            if (fileRecord == null)
+            // Add tag to each applicable directory's database
+            foreach (var directoryPath in applicableDirectories)
             {
-                var fileInfo = new FileInfo(filePath);
-                fileRecord = new LocalFileRecord
+                var relativePath = Path.GetRelativePath(directoryPath, filePath);
+
+                using var dirDb = GetDirectoryDb(directoryPath);
+
+                // Get or create file record
+                var fileRecord = dirDb.LocalFileRecords.FirstOrDefault(f => f.RelativePath == relativePath);
+                if (fileRecord == null)
                 {
-                    FileName = fileName,
-                    RelativePath = relativePath,
-                    LastModified = fileInfo.LastWriteTime,
-                    FileSize = fileInfo.Length
-                };
-                dirDb.LocalFileRecords.Add(fileRecord);
-                dirDb.SaveChanges();
-            }
+                    var fileInfo = new FileInfo(filePath);
+                    fileRecord = new LocalFileRecord
+                    {
+                        FileName = fileName,
+                        RelativePath = relativePath,
+                        LastModified = fileInfo.LastWriteTime,
+                        FileSize = fileInfo.Length
+                    };
+                    dirDb.LocalFileRecords.Add(fileRecord);
+                    dirDb.SaveChanges();
+                }
 
-            // Get or create tag
-            var tag = dirDb.LocalTags.FirstOrDefault(t => t.Name == tagName);
-            if (tag == null)
-            {
-                tag = new LocalTag
+                // Get or create tag
+                var tag = dirDb.LocalTags.FirstOrDefault(t => t.Name == tagName);
+                if (tag == null)
                 {
-                    Name = tagName,
-                    Description = tagDescription,
-                    LastUsedAt = DateTime.UtcNow
-                };
-                dirDb.LocalTags.Add(tag);
-                dirDb.SaveChanges();
-            }
-            else
-            {
-                tag.LastUsedAt = DateTime.UtcNow;
-            }
-
-            // Create file-tag association if it doesn't exist
-            var existingAssociation = dirDb.LocalFileTags
-                .FirstOrDefault(lft => lft.LocalFileRecordId == fileRecord.Id && lft.LocalTagId == tag.Id);
-
-            if (existingAssociation == null)
-            {
-                dirDb.LocalFileTags.Add(new LocalFileTag
+                    tag = new LocalTag
+                    {
+                        Name = tagName,
+                        Description = tagDescription,
+                        LastUsedAt = DateTime.UtcNow
+                    };
+                    dirDb.LocalTags.Add(tag);
+                    dirDb.SaveChanges();
+                }
+                else
                 {
-                    LocalFileRecordId = fileRecord.Id,
-                    LocalTagId = tag.Id
-                });
-                dirDb.SaveChanges();
-            }
+                    tag.LastUsedAt = DateTime.UtcNow;
+                }
 
-            // Sync this directory's tags to main database
-            SynchronizeDirectoryTags(directoryPath);
+                // Create file-tag association if it doesn't exist
+                var existingAssociation = dirDb.LocalFileTags
+                    .FirstOrDefault(lft => lft.LocalFileRecordId == fileRecord.Id && lft.LocalTagId == tag.Id);
+
+                if (existingAssociation == null)
+                {
+                    dirDb.LocalFileTags.Add(new LocalFileTag
+                    {
+                        LocalFileRecordId = fileRecord.Id,
+                        LocalTagId = tag.Id
+                    });
+                    dirDb.SaveChanges();
+                }
+
+                // Sync this directory's tags to main database
+                SynchronizeDirectoryTags(directoryPath);
+            }
         }
 
         /// <summary>
         /// Get all files with tags across all directories
+        /// Consolidates tags from multiple directories for the same file
         /// </summary>
         public List<FileWithTags> GetAllFilesWithTags()
         {
-            var result = new List<FileWithTags>();
+            var fileMap = new Dictionary<string, FileWithTags>(StringComparer.OrdinalIgnoreCase);
             var activeDirectories = GetAllActiveDirectories();
 
             foreach (var directoryPath in activeDirectories)
@@ -317,15 +347,33 @@ namespace FileTagger.Services
                     foreach (var file in files)
                     {
                         var fullPath = Path.Combine(directoryPath, file.RelativePath);
-                        result.Add(new FileWithTags
+                        
+                        // Check if file already exists in our map
+                        if (fileMap.TryGetValue(fullPath, out var existingFile))
                         {
-                            FileName = file.FileName,
-                            FullPath = fullPath,
-                            DirectoryPath = directoryPath,
-                            LastModified = file.LastModified,
-                            FileSize = file.FileSize,
-                            Tags = file.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList()
-                        });
+                            // Merge tags from this directory with existing tags
+                            var newTags = file.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList();
+                            existingFile.Tags = existingFile.Tags.Union(newTags).Distinct().ToList();
+                            
+                            // Update last modified if this one is newer
+                            if (file.LastModified > existingFile.LastModified)
+                            {
+                                existingFile.LastModified = file.LastModified;
+                            }
+                        }
+                        else
+                        {
+                            // Add new file
+                            fileMap[fullPath] = new FileWithTags
+                            {
+                                FileName = file.FileName,
+                                FullPath = fullPath,
+                                DirectoryPath = GetMostSpecificDirectory(fullPath, activeDirectories),
+                                LastModified = file.LastModified,
+                                FileSize = file.FileSize,
+                                Tags = file.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList()
+                            };
+                        }
                     }
                 }
                 catch
@@ -335,7 +383,53 @@ namespace FileTagger.Services
                 }
             }
 
-            return result.OrderBy(f => f.FileName).ToList();
+            return fileMap.Values.OrderBy(f => f.FileName).ToList();
+        }
+
+        /// <summary>
+        /// Get the most specific (deepest) directory that contains a file
+        /// </summary>
+        private string GetMostSpecificDirectory(string filePath, List<string> directories)
+        {
+            var fileDir = Path.GetDirectoryName(filePath) ?? "";
+            return directories
+                .Where(d => fileDir.StartsWith(d, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(d => d.Length)
+                .FirstOrDefault() ?? fileDir;
+        }
+
+        /// <summary>
+        /// Get information about which directories contain tags for a specific file
+        /// Useful for debugging and understanding the hierarchical system
+        /// </summary>
+        public List<string> GetDirectoriesContainingFile(string filePath)
+        {
+            var applicableDirectories = GetApplicableDirectoriesForFile(filePath);
+            var directoriesWithFile = new List<string>();
+
+            foreach (var directoryPath in applicableDirectories)
+            {
+                try
+                {
+                    var relativePath = Path.GetRelativePath(directoryPath, filePath);
+                    using var dirDb = GetDirectoryDb(directoryPath);
+                    
+                    var fileExists = dirDb.LocalFileRecords
+                        .Any(f => f.RelativePath == relativePath);
+                    
+                    if (fileExists)
+                    {
+                        directoriesWithFile.Add(directoryPath);
+                    }
+                }
+                catch
+                {
+                    // Skip directories with issues
+                    continue;
+                }
+            }
+
+            return directoriesWithFile;
         }
     }
 
