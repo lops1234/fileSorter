@@ -99,14 +99,20 @@ namespace FileTagger.Windows
         {
             if (CurrentTagsListBox.SelectedItem is string selectedTagName)
             {
-                var directoryPath = Path.GetDirectoryName(_filePath);
-                if (string.IsNullOrEmpty(directoryPath)) return;
-
-                var relativePath = Path.GetRelativePath(directoryPath, _filePath);
-
                 try
                 {
-                    using var dirDb = DatabaseManager.Instance.GetDirectoryDb(directoryPath);
+                    // Get the appropriate watched directory for this file
+                    var watchedDirectory = DatabaseManager.Instance.GetWatchedDirectoryForFile(_filePath);
+                    if (string.IsNullOrEmpty(watchedDirectory))
+                    {
+                        MessageBox.Show("This file is not in a watched directory. Please add the directory to File Tagger settings first.", 
+                            "File Tagger", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+
+                    var relativePath = Path.GetRelativePath(watchedDirectory, _filePath);
+
+                    using var dirDb = DatabaseManager.Instance.GetDirectoryDb(watchedDirectory);
                     var fileRecord = dirDb.LocalFileRecords.FirstOrDefault(f => f.RelativePath == relativePath);
                     if (fileRecord != null)
                     {
@@ -120,7 +126,7 @@ namespace FileTagger.Windows
                                 dirDb.SaveChanges();
 
                                 // Sync changes to main database
-                                DatabaseManager.Instance.SynchronizeDirectoryTags(directoryPath);
+                                DatabaseManager.Instance.SynchronizeDirectoryTags(watchedDirectory);
                                 
                                 LoadCurrentTags();
                                 LoadAvailableTags();

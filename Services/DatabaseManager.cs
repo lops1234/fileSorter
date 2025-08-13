@@ -173,12 +173,46 @@ namespace FileTagger.Services
 
         /// <summary>
         /// Get or create a directory database context for the specified path
+        /// WARNING: This method should only be used with explicitly watched directories
+        /// For files in subdirectories, use GetDirectoryDbForFile instead
         /// </summary>
         public DirectoryDbContext GetDirectoryDb(string directoryPath)
         {
+            // Optional safety check - uncomment to enforce watched directory requirement
+            // var watchedDirs = GetAllActiveDirectories();
+            // if (!watchedDirs.Contains(directoryPath, StringComparer.OrdinalIgnoreCase))
+            // {
+            //     throw new InvalidOperationException($"Directory '{directoryPath}' is not a watched directory. Use GetDirectoryDbForFile for files in subdirectories.");
+            // }
+            
             var dirDb = new DirectoryDbContext(directoryPath);
             dirDb.Database.EnsureCreated();
             return dirDb;
+        }
+
+        /// <summary>
+        /// Get the appropriate watched directory for a given file path
+        /// Returns the most specific (deepest) watched directory that contains the file
+        /// </summary>
+        public string GetWatchedDirectoryForFile(string filePath)
+        {
+            var applicableDirectories = GetApplicableDirectoriesForFile(filePath);
+            return applicableDirectories.FirstOrDefault(); // Most specific first due to OrderByDescending
+        }
+
+        /// <summary>
+        /// Get the directory database context for a file, using the appropriate watched directory
+        /// This ensures subdirectory files use their parent watched directory's database
+        /// </summary>
+        public DirectoryDbContext GetDirectoryDbForFile(string filePath)
+        {
+            var watchedDirectory = GetWatchedDirectoryForFile(filePath);
+            if (string.IsNullOrEmpty(watchedDirectory))
+            {
+                throw new InvalidOperationException($"File '{filePath}' is not in any watched directory. Please add the directory to File Tagger settings first.");
+            }
+            
+            return GetDirectoryDb(watchedDirectory);
         }
 
         /// <summary>
