@@ -1,0 +1,80 @@
+<Window x:Class="FileTagger.Windows.DirectoryFilterWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Filter Files by Tags" Height="800" Width="1000"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Directory Info -->
+        <TextBlock Grid.Row="0" Text="Directory:" FontWeight="Bold" Margin="0,0,0,5"/>
+        <TextBlock Grid.Row="1" x:Name="DirectoryPathTextBlock" TextWrapping="Wrap" Margin="0,0,0,15" 
+                   Foreground="DarkSlateGray" FontFamily="Consolas"/>
+
+        <!-- Filter Controls -->
+        <StackPanel Grid.Row="2" Orientation="Vertical" Margin="0,0,0,15">
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                <TextBlock Text="Advanced Tag Search:" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                <TextBox x:Name="TagSearchTextBox" Width="300" 
+                         Text="Enter search query..." Foreground="Gray" 
+                         GotFocus="TagSearchTextBox_GotFocus" 
+                         LostFocus="TagSearchTextBox_LostFocus"
+                         KeyUp="TagSearchTextBox_KeyUp"/>
+                <Popup x:Name="TagSuggestionsPopup" 
+                       PlacementTarget="{Binding ElementName=TagSearchTextBox}"
+                       Placement="Bottom" 
+                       IsOpen="False"
+                       StaysOpen="False">
+                    <Border Background="White" BorderBrush="Gray" BorderThickness="1" MaxHeight="200">
+                        <ListBox x:Name="TagSuggestionsListBox" 
+                                 MouseLeftButtonUp="TagSuggestion_Selected"
+                                 KeyUp="TagSuggestionsListBox_KeyUp"/>
+                    </Border>
+                </Popup>
+                <Button x:Name="SearchButton" Content="Search" Click="Search_Click" Margin="10,0,0,0"/>
+                <Button x:Name="SearchAllButton" Content="Search All" Click="SearchAll_Click" Margin="5,0,0,0" ToolTip="Find all files in this directory"/>
+                <Button x:Name="ClearFilterButton" Content="Clear" Click="ClearFilter_Click" Margin="5,0,0,0"/>
+                <Button x:Name="RefreshButton" Content="Refresh" Click="Refresh_Click" Margin="5,0,0,0"/>
+                <Button x:Name="OpenInExplorerButton" Content="Open in Explorer" Click="OpenInExplorer_Click" Margin="5,0,0,0" ToolTip="Copy filtered results to temporary folder and open in Windows Explorer"/>
+                <Button x:Name="SearchHelpButton" Content="?" Click="SearchHelp_Click" Margin="5,0,0,0" Width="25" ToolTip="Show search syntax help"/>
+            </StackPanel>
+            <TextBlock x:Name="SearchStatusTextBlock" Margin="0,0,0,5" Foreground="Gray" FontSize="11"/>
+            <TextBlock Text="Syntax: 'tag1 tag2' (AND), 'tag1 | tag2' (OR), '(tag1 | tag2) &amp; tag3' (grouping), '-tag' (exclude)" 
+                       Margin="0,0,0,5" Foreground="DarkBlue" FontSize="10" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Files List -->
+        <DataGrid Grid.Row="3" x:Name="FilesDataGrid" AutoGenerateColumns="False" 
+                  CanUserAddRows="False" CanUserDeleteRows="False" 
+                  SelectionMode="Single" GridLinesVisibility="Horizontal">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="File Name" Binding="{Binding FileName}" Width="250"/>
+                <DataGridTextColumn Header="Extension" Binding="{Binding Extension}" Width="80"/>
+                <DataGridTextColumn Header="Tags" Binding="{Binding TagsString}" Width="200"/>
+                <DataGridTextColumn Header="Size" Binding="{Binding FileSizeFormatted}" Width="80"/>
+                <DataGridTextColumn Header="Modified" Binding="{Binding LastModified, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Width="140"/>
+            </DataGrid.Columns>
+            <DataGrid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Open File" Click="OpenFile_Click"/>
+                    <MenuItem Header="Open Folder in Explorer" Click="OpenFileFolder_Click"/>
+                    <MenuItem Header="Manage Tags" Click="ManageFileTags_Click"/>
+                    <Separator/>
+                    <MenuItem Header="Copy Path" Click="CopyFilePath_Click"/>
+                </ContextMenu>
+            </DataGrid.ContextMenu>
+        </DataGrid>
+
+        <!-- Status and Actions -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+            <TextBlock x:Name="FileCountTextBlock" Text="0 files" VerticalAlignment="Center" Margin="0,0,15,0"/>
+            <Button x:Name="CloseButton" Content="Close" Click="Close_Click" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>
