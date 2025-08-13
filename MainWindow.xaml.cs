@@ -230,6 +230,51 @@ namespace FileTagger
             LoadDirectories();
         }
 
+        private void ScanForExisting_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Show progress message
+                var originalText = ScanForExistingButton.Content.ToString();
+                ScanForExistingButton.Content = "Scanning...";
+                ScanForExistingButton.IsEnabled = false;
+
+                // Perform the scan
+                var discoveredDirectories = DatabaseManager.Instance.DiscoverAndImportExistingDatabases();
+
+                if (discoveredDirectories.Any())
+                {
+                    var directoryList = string.Join("\n• ", discoveredDirectories);
+                    MessageBox.Show($"Successfully discovered and imported {discoveredDirectories.Count} directories with existing .filetagger databases:\n\n• {directoryList}", 
+                        "Directories Discovered", MessageBoxButton.OK, MessageBoxImage.Information);
+                    
+                    // Refresh the UI to show newly imported directories
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                    
+                    // Refresh context menus to ensure they work with new directories
+                    ShellIntegration.RefreshContextMenus();
+                }
+                else
+                {
+                    MessageBox.Show("No new .filetagger directories were found. All existing databases are already being watched.", 
+                        "No New Directories Found", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error scanning for existing databases: {ex.Message}", 
+                    "Scan Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                // Restore button state
+                ScanForExistingButton.Content = "Scan for Existing Databases";
+                ScanForExistingButton.IsEnabled = true;
+            }
+        }
+
         #endregion
 
         #region Tag Management

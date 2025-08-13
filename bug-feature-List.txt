@@ -1,0 +1,8 @@
+Bug:
+Dubult datubāze
+Tag description doesnt save sometimes
+Open in browser -> should not open new window if current is opened with same path
+
+Feature:
+Add/Remove on click. -> Possiblity
+Tag search -> for tag managment and for searching.

@@ -44,8 +44,131 @@ namespace FileTagger.Services
                 mainDb.Database.EnsureCreated();
             }
 
+            // Discover and add existing .filetagger directories
+            DiscoverExistingFileTaggerDirectories();
+
             // Sync tags from all directory databases
             SynchronizeAllTags();
+        }
+
+        /// <summary>
+        /// Discover existing .filetagger directories and add them to watched directories if not already present
+        /// </summary>
+        private void DiscoverExistingFileTaggerDirectories()
+        {
+            try
+            {
+                using var mainDb = new MainDbContext();
+                var existingWatchedDirs = mainDb.WatchedDirectories
+                    .Select(d => d.DirectoryPath)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                // Search common drive roots for .filetagger directories
+                var searchRoots = GetSearchRoots();
+                var discoveredDirectories = new List<string>();
+
+                foreach (var searchRoot in searchRoots)
+                {
+                    try
+                    {
+                        if (!Directory.Exists(searchRoot))
+                            continue;
+
+                        // Search for .filetagger directories recursively
+                        var fileTaggerDirs = Directory.GetDirectories(searchRoot, ".filetagger", SearchOption.AllDirectories);
+                        
+                        foreach (var fileTaggerDir in fileTaggerDirs)
+                        {
+                            // Get the parent directory (the actual directory we want to watch)
+                            var parentDir = Path.GetDirectoryName(fileTaggerDir);
+                            if (string.IsNullOrEmpty(parentDir) || existingWatchedDirs.Contains(parentDir))
+                                continue;
+
+                            // Check if there's a valid database file
+                            var dbFile = Path.Combine(fileTaggerDir, "tags.db");
+                            if (File.Exists(dbFile))
+                            {
+                                discoveredDirectories.Add(parentDir);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip search roots that can't be accessed
+                        continue;
+                    }
+                }
+
+                // Add discovered directories to watched list
+                foreach (var directoryPath in discoveredDirectories)
+                {
+                    try
+                    {
+                        var watchedDir = new WatchedDirectory
+                        {
+                            DirectoryPath = directoryPath,
+                            IsActive = true,
+                            LastSyncAt = DateTime.UtcNow
+                        };
+                        mainDb.WatchedDirectories.Add(watchedDir);
+                    }
+                    catch
+                    {
+                        // Skip directories that can't be added
+                        continue;
+                    }
+                }
+
+                if (discoveredDirectories.Any())
+                {
+                    mainDb.SaveChanges();
+                }
+            }
+            catch
+            {
+                // If discovery fails, continue with normal initialization
+            }
+        }
+
+        /// <summary>
+        /// Get search roots for discovering existing .filetagger directories
+        /// </summary>
+        private List<string> GetSearchRoots()
+        {
+            var searchRoots = new List<string>();
+
+            try
+            {
+                // Add user profile directories
+                var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                if (!string.IsNullOrEmpty(userProfile))
+                {
+                    searchRoots.Add(userProfile);
+                    
+                    // Add common subdirectories
+                    var commonDirs = new[] { "Documents", "Downloads", "Desktop", "Pictures", "Videos" };
+                    foreach (var dir in commonDirs)
+                    {
+                        var fullPath = Path.Combine(userProfile, dir);
+                        if (Directory.Exists(fullPath))
+                            searchRoots.Add(fullPath);
+                    }
+                }
+
+                // Add all logical drives (but limit search depth for performance)
+                var drives = DriveInfo.GetDrives()
+                    .Where(d => d.DriveType == DriveType.Fixed && d.IsReady)
+                    .Select(d => d.RootDirectory.FullName);
+                
+                searchRoots.AddRange(drives);
+            }
+            catch
+            {
+                // If we can't get search roots, just use current directory
+                searchRoots.Add(Environment.CurrentDirectory);
+            }
+
+            return searchRoots;
         }
 
         /// <summary>
@@ -56,6 +179,96 @@ namespace FileTagger.Services
             var dirDb = new DirectoryDbContext(directoryPath);
             dirDb.Database.EnsureCreated();
             return dirDb;
+        }
+
+        /// <summary>
+        /// Manually discover and import existing .filetagger directories from a specific root path
+        /// </summary>
+        public List<string> DiscoverAndImportExistingDatabases(string rootPath = null)
+        {
+            var discoveredDirectories = new List<string>();
+            
+            try
+            {
+                using var mainDb = new MainDbContext();
+                var existingWatchedDirs = mainDb.WatchedDirectories
+                    .Select(d => d.DirectoryPath)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                var searchRoots = string.IsNullOrEmpty(rootPath) ? GetSearchRoots() : new List<string> { rootPath };
+
+                foreach (var searchRoot in searchRoots)
+                {
+                    try
+                    {
+                        if (!Directory.Exists(searchRoot))
+                            continue;
+
+                        // Search for .filetagger directories recursively
+                        var fileTaggerDirs = Directory.GetDirectories(searchRoot, ".filetagger", SearchOption.AllDirectories);
+                        
+                        foreach (var fileTaggerDir in fileTaggerDirs)
+                        {
+                            // Get the parent directory (the actual directory we want to watch)
+                            var parentDir = Path.GetDirectoryName(fileTaggerDir);
+                            if (string.IsNullOrEmpty(parentDir) || existingWatchedDirs.Contains(parentDir))
+                                continue;
+
+                            // Check if there's a valid database file
+                            var dbFile = Path.Combine(fileTaggerDir, "tags.db");
+                            if (File.Exists(dbFile))
+                            {
+                                // Try to add the directory
+                                try
+                                {
+                                    var watchedDir = new WatchedDirectory
+                                    {
+                                        DirectoryPath = parentDir,
+                                        IsActive = true,
+                                        LastSyncAt = DateTime.UtcNow
+                                    };
+                                    mainDb.WatchedDirectories.Add(watchedDir);
+                                    discoveredDirectories.Add(parentDir);
+                                    existingWatchedDirs.Add(parentDir); // Update our cache to avoid duplicates
+                                }
+                                catch
+                                {
+                                    // Skip directories that can't be added (e.g., database constraint violations)
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip search roots that can't be accessed
+                        continue;
+                    }
+                }
+
+                if (discoveredDirectories.Any())
+                {
+                    mainDb.SaveChanges();
+                    // Sync tags from newly discovered directories
+                    foreach (var dir in discoveredDirectories)
+                    {
+                        try
+                        {
+                            SynchronizeDirectoryTags(dir);
+                        }
+                        catch
+                        {
+                            // Continue with other directories if one fails
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // If discovery fails, return what we found so far
+            }
+
+            return discoveredDirectories;
         }
 
         /// <summary>

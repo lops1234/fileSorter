@@ -96,21 +96,10 @@ namespace FileTagger
 
         private static string GetExecutablePath()
         {
-            // For single-file deployments, Assembly.Location returns empty string
-            // Use Environment.ProcessPath which works for both single-file and regular deployments
+            // For single-file deployments, use Environment.ProcessPath which works for both single-file and regular deployments
             var executablePath = Environment.ProcessPath;
             
-            if (string.IsNullOrEmpty(executablePath))
-            {
-                // Fallback for older .NET versions or unusual deployment scenarios
-                executablePath = Assembly.GetExecutingAssembly().Location;
-                if (executablePath.EndsWith(".dll"))
-                {
-                    executablePath = executablePath.Replace(".dll", ".exe");
-                }
-            }
-            
-            // If still empty, try using AppContext.BaseDirectory + process name
+            // If Environment.ProcessPath is not available, construct path using AppContext.BaseDirectory + process name
             if (string.IsNullOrEmpty(executablePath))
             {
                 var processName = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
