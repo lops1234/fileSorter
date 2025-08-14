@@ -76,11 +76,6 @@ There are multiple ways to create tags:
 - Go to the "File Browser" tab
 - Right-click on a file and select "Manage Tags"
 
-#### Viewing File Tags
-
-- Right-click on any file in a watched directory
-- Select "View File Tags" to see all tags assigned to that file
-
 #### Advanced Tag Search
 
 File Tagger supports powerful search syntax for finding files with complex tag combinations:
@@ -125,18 +120,6 @@ File Tagger supports powerful search syntax for finding files with complex tag c
 - Use "Clear" to reset the search
 - Use "Refresh Tags" to update the tag list after adding new tags
 
-**In Windows Explorer:**
-- Right-click on any directory
-- Select "Filter Files by Tags"
-- Type advanced search query in the search box (autocomplete will show available tags)
-- Click "Search" to filter files matching the query
-- Click "Open in Explorer" to copy all filtered files to a temporary folder and open it in Explorer
-- Right-click on any file to:
-  - Open the file
-  - Open folder containing the file in Explorer
-  - Manage file tags
-  - Copy file path to clipboard
-- Click "?" for syntax help
 
 ### Temporary Results Feature
 

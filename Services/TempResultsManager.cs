@@ -419,7 +419,7 @@ namespace FileTagger.Services
                              $"⭐ TAG MANAGEMENT FEATURE ⭐\n" +
                              $"You can right-click on any file here to add or manage tags!\n" +
                              $"Tags will be applied to the original files in their actual locations.\n" +
-                             $"Use 'Manage Tags' or 'View File Tags' from the context menu.";
+                             $"Use 'Manage Tags' from the context menu.";
 
                 File.WriteAllText(readmePath, content);
             }

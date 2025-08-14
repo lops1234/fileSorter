@@ -11,8 +11,6 @@ namespace FileTagger
     {
         private const string SHELL_KEY = @"*\shell";
         private const string ADD_TAG_KEY = "FileTagger.AddTag";
-        private const string VIEW_TAGS_KEY = "FileTagger.ViewTags";
-        private const string FILTER_BY_TAGS_KEY = "FileTagger.FilterByTags";
         
         private static string _lastRegisteredExecutablePath = string.Empty;
 
@@ -50,20 +48,9 @@ namespace FileTagger
                     commandKey?.SetValue("", $"\"{executablePath}\" --manage-tags \"%1\"");
                 }
 
-                // Register "View Tags" context menu
-                using (var key = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{SHELL_KEY}\{VIEW_TAGS_KEY}"))
-                {
-                    key?.SetValue("", "View File Tags");
-                    key?.SetValue("AppliesTo", "*"); // Ensure it applies to all files
-                }
 
-                using (var commandKey = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{SHELL_KEY}\{VIEW_TAGS_KEY}\command"))
-                {
-                    commandKey?.SetValue("", $"\"{executablePath}\" --view-tags \"%1\"");
-                }
 
-                // Register for directories as well
-                RegisterDirectoryContextMenu(executablePath);
+
                 
                 _lastRegisteredExecutablePath = executablePath;
                 
@@ -114,10 +101,8 @@ namespace FileTagger
             try
             {
                 using var addTagKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{SHELL_KEY}\{ADD_TAG_KEY}");
-                using var viewTagKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{SHELL_KEY}\{VIEW_TAGS_KEY}");
-                using var filterKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\Directory\shell\{FILTER_BY_TAGS_KEY}");
                 
-                return addTagKey != null && viewTagKey != null && filterKey != null;
+                return addTagKey != null;
             }
             catch
             {
@@ -145,37 +130,7 @@ namespace FileTagger
         [System.Runtime.InteropServices.DllImport("shell32.dll")]
         private static extern void SHChangeNotify(uint wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
 
-        private static void RegisterDirectoryContextMenu(string executablePath)
-        {
-            try
-            {
-                // Register context menu for directories
-                using (var key = Registry.CurrentUser.CreateSubKey($@"Software\Classes\Directory\shell\{FILTER_BY_TAGS_KEY}"))
-                {
-                    key?.SetValue("", "Filter Files by Tags");
-                }
 
-                using (var commandKey = Registry.CurrentUser.CreateSubKey($@"Software\Classes\Directory\shell\{FILTER_BY_TAGS_KEY}\command"))
-                {
-                    commandKey?.SetValue("", $"\"{executablePath}\" --filter-directory \"%1\"");
-                }
-
-                // Also register for directory background (right-click in empty space)
-                using (var backgroundKey = Registry.CurrentUser.CreateSubKey($@"Software\Classes\Directory\Background\shell\{FILTER_BY_TAGS_KEY}"))
-                {
-                    backgroundKey?.SetValue("", "Filter Files by Tags (Current Directory)");
-                }
-
-                using (var backgroundCommandKey = Registry.CurrentUser.CreateSubKey($@"Software\Classes\Directory\Background\shell\{FILTER_BY_TAGS_KEY}\command"))
-                {
-                    backgroundCommandKey?.SetValue("", $"\"{executablePath}\" --filter-directory \"%V\"");
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Failed to register directory context menu: {ex.Message}");
-            }
-        }
 
         /// <summary>
         /// Completely remove all context menu entries - use only for uninstallation
@@ -186,11 +141,8 @@ namespace FileTagger
             {
                 // Remove file context menus
                 Registry.CurrentUser.DeleteSubKeyTree($@"Software\Classes\{SHELL_KEY}\{ADD_TAG_KEY}", false);
-                Registry.CurrentUser.DeleteSubKeyTree($@"Software\Classes\{SHELL_KEY}\{VIEW_TAGS_KEY}", false);
                 
-                // Remove directory context menus
-                Registry.CurrentUser.DeleteSubKeyTree($@"Software\Classes\Directory\shell\{FILTER_BY_TAGS_KEY}", false);
-                Registry.CurrentUser.DeleteSubKeyTree($@"Software\Classes\Directory\Background\shell\{FILTER_BY_TAGS_KEY}", false);
+
                 
                 // Reset last registered path so they can be re-registered if needed
                 _lastRegisteredExecutablePath = string.Empty;
