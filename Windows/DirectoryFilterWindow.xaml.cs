@@ -160,14 +160,28 @@ namespace FileTagger.Windows
             
             try
             {
+                // Find the appropriate watched directory for this path
+                var watchedDirectories = Services.DatabaseManager.Instance.GetAllActiveDirectories();
+                var applicableWatchedDir = watchedDirectories
+                    .Where(wd => _directoryPath.StartsWith(wd, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(wd => wd.Length) // Most specific first
+                    .FirstOrDefault();
+                
+                if (string.IsNullOrEmpty(applicableWatchedDir))
+                {
+                    MessageBox.Show("This directory is not within any watched directory. Please add a parent directory to File Tagger settings first.", 
+                        "Directory Not Watched", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return new List<FileTagger.Services.FileWithTags>();
+                }
+
                 // Get all files from the file system in this directory
                 var allFiles = Directory.GetFiles(_directoryPath, "*", SearchOption.AllDirectories);
                 
-                using var dirDb = Services.DatabaseManager.Instance.GetDirectoryDb(_directoryPath);
+                using var dirDb = Services.DatabaseManager.Instance.GetDirectoryDb(applicableWatchedDir);
                 var taggedFilesMap = dirDb.LocalFileRecords
                     .Include(f => f.LocalFileTags)
                     .ThenInclude(lft => lft.LocalTag)
-                    .ToDictionary(f => Path.Combine(_directoryPath, f.RelativePath), 
+                    .ToDictionary(f => Path.Combine(applicableWatchedDir, f.RelativePath), 
                                 f => f, 
                                 StringComparer.OrdinalIgnoreCase);
 

@@ -42,10 +42,12 @@
                         <ListBox x:Name="DirectoriesListBox" Grid.Column="0" 
                                  SelectionChanged="DirectoriesListBox_SelectionChanged"/>
 
-                        <StackPanel Grid.Column="1" Width="120">
+                        <StackPanel Grid.Column="1" Width="150">
                             <Button x:Name="AddDirectoryButton" Content="Add Directory" Click="AddDirectory_Click"/>
                             <Button x:Name="RemoveDirectoryButton" Content="Remove Directory" Click="RemoveDirectory_Click" IsEnabled="False"/>
                             <Button x:Name="RefreshButton" Content="Refresh" Click="Refresh_Click" Margin="5,20,5,5"/>
+                            <Button x:Name="ScanForExistingButton" Content="Scan for Existing Databases" Click="ScanForExisting_Click" Margin="5,5,5,5" 
+                                    ToolTip="Automatically discover and import existing .filetagger directories"/>
                         </StackPanel>
                     </Grid>
 
