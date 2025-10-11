@@ -230,6 +230,69 @@ namespace FileTagger
             LoadDirectories();
         }
 
+        private void VerifyFiles_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var result = MessageBox.Show(
+                    "This will check all tagged files to ensure they still exist.\n\n" +
+                    "Missing files will be removed from the database and tag counts will be updated.\n\n" +
+                    "This fixes issues where tags show a count but searching returns no results.\n\n" +
+                    "Do you want to continue?",
+                    "Verify Tagged Files",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var verificationResult = DatabaseManager.Instance.VerifyAndCleanupTaggedFiles();
+
+                    var message = $"File verification completed!\n\n" +
+                                 $"Total files checked: {verificationResult.TotalFilesChecked}\n" +
+                                 $"Existing files: {verificationResult.ExistingFilesCount}\n" +
+                                 $"Missing files removed: {verificationResult.MissingFilesCount}";
+
+                    if (verificationResult.AffectedTags.Any())
+                    {
+                        message += $"\n\nTags with updated counts: {verificationResult.AffectedTags.Count}\n";
+                        var tagList = string.Join(", ", verificationResult.AffectedTags.Take(10));
+                        message += tagList;
+                        if (verificationResult.AffectedTags.Count > 10)
+                        {
+                            message += $", and {verificationResult.AffectedTags.Count - 10} more...";
+                        }
+                    }
+
+                    if (verificationResult.Errors.Any())
+                    {
+                        message += $"\n\nErrors encountered: {verificationResult.Errors.Count}\n" +
+                                  string.Join("\n", verificationResult.Errors.Take(5));
+                        if (verificationResult.Errors.Count > 5)
+                        {
+                            message += $"\n... and {verificationResult.Errors.Count - 5} more errors";
+                        }
+                    }
+
+                    if (verificationResult.MissingFilesCount > 0)
+                    {
+                        message += "\n\nTag counts have been updated. Try searching again!";
+                    }
+
+                    MessageBox.Show(message, "Verification Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                    // Refresh the UI to show updated data
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during file verification: {ex.Message}",
+                    "Verification Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private void ScanForExisting_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -373,7 +436,20 @@ namespace FileTagger
 
         private void RefreshTags_Click(object sender, RoutedEventArgs e)
         {
-            LoadTags();
+            try
+            {
+                // Resynchronize all tags from directory databases
+                // This will clean up tags with zero usage count
+                DatabaseManager.Instance.SynchronizeAllTags();
+                LoadTags();
+                MessageBox.Show("Tags refreshed and orphaned tags cleaned up successfully!", 
+                    "Refresh Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error refreshing tags: {ex.Message}", 
+                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         #endregion

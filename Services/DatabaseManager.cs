@@ -396,24 +396,32 @@ namespace FileTagger.Services
             using var dirDb = GetDirectoryDb(directoryPath);
             var localTags = dirDb.LocalTags.Include(t => t.LocalFileTags).ToList();
 
+            // Track which tags we've seen in this sync
+            var seenTagIds = new HashSet<int>();
+
             foreach (var localTag in localTags)
             {
                 var aggregatedTag = mainDb.AggregatedTags.FirstOrDefault(at => 
-                    at.Name == localTag.Name && at.SourceDirectoryId == watchedDir.Id);
+at.Name == localTag.Name && at.SourceDirectoryId == watchedDir.Id);
 
                 if (aggregatedTag == null)
                 {
-                    // Create new aggregated tag
-                    aggregatedTag = new AggregatedTag
+                    // Only create new aggregated tag if it has file associations
+                    if (localTag.LocalFileTags.Count > 0)
                     {
-                        Name = localTag.Name,
-                        Description = localTag.Description,
-                        SourceDirectoryId = watchedDir.Id,
-                        CreatedAt = localTag.CreatedAt,
-                        LastSeenAt = DateTime.UtcNow,
-                        UsageCount = localTag.LocalFileTags.Count
-                    };
-                    mainDb.AggregatedTags.Add(aggregatedTag);
+                        aggregatedTag = new AggregatedTag
+                        {
+                            Name = localTag.Name,
+                            Description = localTag.Description,
+                            SourceDirectoryId = watchedDir.Id,
+                            CreatedAt = localTag.CreatedAt,
+                            LastSeenAt = DateTime.UtcNow,
+                            UsageCount = localTag.LocalFileTags.Count
+                        };
+                        mainDb.AggregatedTags.Add(aggregatedTag);
+                        mainDb.SaveChanges(); // Save to get the ID
+                        seenTagIds.Add(aggregatedTag.Id);
+                    }
                 }
                 else
                 {
@@ -421,7 +429,25 @@ namespace FileTagger.Services
                     aggregatedTag.Description = localTag.Description;
                     aggregatedTag.LastSeenAt = DateTime.UtcNow;
                     aggregatedTag.UsageCount = localTag.LocalFileTags.Count;
+                    seenTagIds.Add(aggregatedTag.Id);
+                    
+                    // Remove aggregated tag if it has zero usage
+                    if (aggregatedTag.UsageCount == 0)
+                    {
+                        mainDb.AggregatedTags.Remove(aggregatedTag);
+                        seenTagIds.Remove(aggregatedTag.Id);
+                    }
                 }
+            }
+
+            // Remove any aggregated tags for this directory that no longer exist in local DB
+            var orphanedAggregatedTags = mainDb.AggregatedTags
+                .Where(at => at.SourceDirectoryId == watchedDir.Id && !seenTagIds.Contains(at.Id))
+                .ToList();
+            
+            foreach (var orphanedTag in orphanedAggregatedTags)
+            {
+                mainDb.AggregatedTags.Remove(orphanedTag);
             }
 
             watchedDir.LastSyncAt = DateTime.UtcNow;
@@ -874,6 +900,87 @@ namespace FileTagger.Services
 
             return fileMap.Values.OrderBy(f => f.FileName).ToList();
         }
+
+        /// <summary>
+        /// Verify that all tagged files exist and clean up missing files
+        /// </summary>
+        public FileVerificationResult VerifyAndCleanupTaggedFiles()
+        {
+            var result = new FileVerificationResult();
+            var activeDirectories = GetAllActiveDirectories();
+            var affectedTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var directoryPath in activeDirectories)
+            {
+                try
+                {
+                    using var dirDb = GetDirectoryDb(directoryPath);
+                    var files = dirDb.LocalFileRecords
+                        .Include(f => f.LocalFileTags)
+                        .ThenInclude(lft => lft.LocalTag)
+                        .ToList();
+
+                    var directoryMissingCount = 0;
+
+                    foreach (var file in files)
+                    {
+                        var fullPath = Path.Combine(directoryPath, file.RelativePath);
+                        result.TotalFilesChecked++;
+
+                        if (!File.Exists(fullPath))
+                        {
+                            result.MissingFiles.Add(fullPath);
+                            result.MissingFilesCount++;
+                            directoryMissingCount++;
+
+                            // Track which tags were affected
+                            foreach (var fileTag in file.LocalFileTags)
+                            {
+                                affectedTags.Add(fileTag.LocalTag.Name);
+                            }
+
+                            // Remove the file record and its tag associations
+                            dirDb.LocalFileRecords.Remove(file);
+                        }
+                        else
+                        {
+                            result.ExistingFilesCount++;
+                        }
+                    }
+
+                    // Save changes if any files were removed
+                    if (directoryMissingCount > 0)
+                    {
+                        dirDb.SaveChanges();
+                        
+                        // Resynchronize tags to update counts in main database
+                        SynchronizeDirectoryTags(directoryPath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result.Errors.Add($"Error verifying {directoryPath}: {ex.Message}");
+                }
+            }
+
+            result.AffectedTags = affectedTags.ToList();
+            result.Success = result.Errors.Count == 0;
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Result of file verification and cleanup operation
+    /// </summary>
+    public class FileVerificationResult
+    {
+        public bool Success { get; set; }
+        public int TotalFilesChecked { get; set; }
+        public int ExistingFilesCount { get; set; }
+        public int MissingFilesCount { get; set; }
+        public List<string> MissingFiles { get; set; } = new List<string>();
+        public List<string> AffectedTags { get; set; } = new List<string>();
+        public List<string> Errors { get; set; } = new List<string>();
     }
 
     /// <summary>

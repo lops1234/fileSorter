@@ -48,6 +48,8 @@
                             <Button x:Name="RefreshButton" Content="Refresh" Click="Refresh_Click" Margin="5,20,5,5"/>
                             <Button x:Name="ScanForExistingButton" Content="Scan for Existing Databases" Click="ScanForExisting_Click" Margin="5,5,5,5" 
                                     ToolTip="Automatically discover and import existing .filetagger directories"/>
+                            <Button x:Name="VerifyFilesButton" Content="Verify Tagged Files" Click="VerifyFiles_Click" Margin="5,5,5,5" 
+                                    ToolTip="Check that all tagged files exist and update tag counts"/>
                         </StackPanel>
                     </Grid>
 
@@ -91,7 +93,8 @@
 
                     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="DeleteTagButton" Content="Delete Selected Tag" Click="DeleteTag_Click" IsEnabled="False"/>
-                        <Button x:Name="RefreshTagsButton" Content="Refresh" Click="RefreshTags_Click"/>
+                        <Button x:Name="RefreshTagsButton" Content="Refresh Tags" Click="RefreshTags_Click" 
+                                ToolTip="Resynchronize tags and remove orphaned tags with zero file associations"/>
                     </StackPanel>
                 </Grid>
             </TabItem>
