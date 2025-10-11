@@ -967,6 +967,280 @@ at.Name == localTag.Name && at.SourceDirectoryId == watchedDir.Id);
             result.Success = result.Errors.Count == 0;
             return result;
         }
+
+        /// <summary>
+        /// Find and merge all duplicate .filetagger databases (e.g., .filetagger (1), .filetagger (2))
+        /// from Google Drive or other sync conflicts into the main .filetagger database
+        /// </summary>
+        public DatabaseMergeResult MergeAllDuplicateFileTaggerDatabases()
+        {
+            var result = new DatabaseMergeResult();
+            var activeDirectories = GetAllActiveDirectories();
+
+            foreach (var directoryPath in activeDirectories)
+            {
+                try
+                {
+                    var duplicatesFound = MergeDuplicatesInDirectory(directoryPath, result);
+                    if (duplicatesFound > 0)
+                    {
+                        result.DirectoriesWithDuplicates++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result.Errors.Add($"Error processing {directoryPath}: {ex.Message}");
+                }
+            }
+
+            result.Success = result.Errors.Count == 0;
+            return result;
+        }
+
+        private bool IsDatabaseLocked(string dbPath)
+        {
+            if (!File.Exists(dbPath))
+                return false;
+
+            try
+            {
+                // Try to open the file exclusively to check if it's locked
+                using (var stream = File.Open(dbPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    return false; // Not locked
+                }
+            }
+            catch (IOException)
+            {
+                return true; // Locked
+            }
+        }
+
+        private int MergeDuplicatesInDirectory(string directoryPath, DatabaseMergeResult result)
+        {
+            var baseFileTaggerDir = Path.Combine(directoryPath, ".filetagger");
+            
+            // Check if base .filetagger exists
+            if (!Directory.Exists(baseFileTaggerDir))
+            {
+                return 0;
+            }
+
+            // Find all duplicate directories (.filetagger (1), .filetagger (2), etc.)
+            var duplicateDirs = new List<string>();
+            var parentDir = Directory.GetParent(baseFileTaggerDir)?.FullName;
+            
+            if (parentDir == null)
+                return 0;
+
+            // Look for .filetagger (1), .filetagger (2), etc.
+            for (int i = 1; i <= 20; i++) // Check up to (20)
+            {
+                var duplicateDir = Path.Combine(parentDir, $".filetagger ({i})");
+                if (Directory.Exists(duplicateDir))
+                {
+                    var dbPath = Path.Combine(duplicateDir, "tags.db");
+                    if (File.Exists(dbPath))
+                    {
+                        duplicateDirs.Add(duplicateDir);
+                    }
+                }
+            }
+
+            if (!duplicateDirs.Any())
+                return 0;
+
+            result.DuplicateDatabasesFound += duplicateDirs.Count;
+
+            // Merge each duplicate into the base database
+            using var baseDb = GetDirectoryDb(directoryPath);
+            
+            foreach (var duplicateDir in duplicateDirs)
+            {
+                try
+                {
+                    MergeDuplicateDatabaseIntoBase(baseDb, duplicateDir, directoryPath, result);
+                    
+                    // Delete the duplicate directory after successful merge
+                    Directory.Delete(duplicateDir, true);
+                    result.DuplicateDatabasesDeleted++;
+                }
+                catch (Exception ex)
+                {
+                    result.Errors.Add($"Failed to merge {duplicateDir}: {ex.Message}");
+                }
+            }
+
+            // Resynchronize tags after all merges
+            if (result.DuplicateDatabasesDeleted > 0)
+            {
+                SynchronizeDirectoryTags(directoryPath);
+            }
+
+            return duplicateDirs.Count;
+        }
+
+        private void MergeDuplicateDatabaseIntoBase(DirectoryDbContext baseDb, string duplicateDirPath, 
+            string baseDirPath, DatabaseMergeResult result)
+        {
+            var duplicateDbPath = Path.Combine(duplicateDirPath, "tags.db");
+            
+            // Check if the duplicate database is locked
+            if (IsDatabaseLocked(duplicateDbPath))
+            {
+                throw new IOException($"Database is locked by another process: {duplicateDbPath}. Please close all applications using this database and try again.");
+            }
+            
+            // Create a temporary connection to the duplicate database with read-only mode
+            var connectionString = $"Data Source={duplicateDbPath};Mode=ReadOnly";
+            var optionsBuilder = new DbContextOptionsBuilder<DirectoryDbContext>();
+            optionsBuilder.UseSqlite(connectionString);
+            
+            using var duplicateDb = new DirectoryDbContext(baseDirPath);
+            // Manually set the connection string for duplicate DB
+            duplicateDb.Database.SetConnectionString(connectionString);
+
+            // Load all data from duplicate database
+            var duplicateTags = duplicateDb.LocalTags.ToList();
+            var duplicateFiles = duplicateDb.LocalFileRecords.Include(f => f.LocalFileTags).ToList();
+
+            // Load all base tags into memory for comparison
+            var baseTags = baseDb.LocalTags.ToList();
+            var tagMapping = new Dictionary<int, int>(); // old ID -> new ID
+
+            foreach (var duplicateTag in duplicateTags)
+            {
+                // Compare in memory, not in SQL query
+                var existingTag = baseTags.FirstOrDefault(t => 
+                    string.Equals(t.Name, duplicateTag.Name, StringComparison.OrdinalIgnoreCase));
+
+                if (existingTag == null)
+                {
+                    // Create new tag
+                    var newTag = new LocalTag
+                    {
+                        Name = duplicateTag.Name,
+                        Description = duplicateTag.Description,
+                        CreatedAt = duplicateTag.CreatedAt,
+                        LastUsedAt = duplicateTag.LastUsedAt
+                    };
+                    baseDb.LocalTags.Add(newTag);
+                    baseDb.SaveChanges();
+                    
+                    // Add to our in-memory list for future comparisons
+                    baseTags.Add(newTag);
+                    
+                    tagMapping[duplicateTag.Id] = newTag.Id;
+                    result.TagsMerged++;
+                }
+                else
+                {
+                    // Update existing tag if duplicate has newer info
+                    if (duplicateTag.LastUsedAt > existingTag.LastUsedAt)
+                    {
+                        existingTag.LastUsedAt = duplicateTag.LastUsedAt;
+                    }
+                    if (!string.IsNullOrEmpty(duplicateTag.Description) && string.IsNullOrEmpty(existingTag.Description))
+                    {
+                        existingTag.Description = duplicateTag.Description;
+                    }
+                    
+                    tagMapping[duplicateTag.Id] = existingTag.Id;
+                }
+            }
+
+            // Merge file records
+            // Load all base file records into memory for comparison
+            var baseFiles = baseDb.LocalFileRecords.ToList();
+            var fileMapping = new Dictionary<int, int>(); // old ID -> new ID
+
+            foreach (var duplicateFile in duplicateFiles)
+            {
+                // Compare in memory, not in SQL query
+                var existingFile = baseFiles.FirstOrDefault(f => 
+                    string.Equals(f.RelativePath, duplicateFile.RelativePath, StringComparison.OrdinalIgnoreCase));
+
+                if (existingFile == null)
+                {
+                    // Create new file record
+                    var newFile = new LocalFileRecord
+                    {
+                        FileName = duplicateFile.FileName,
+                        RelativePath = duplicateFile.RelativePath,
+                        LastModified = duplicateFile.LastModified,
+                        FileSize = duplicateFile.FileSize
+                    };
+                    baseDb.LocalFileRecords.Add(newFile);
+                    baseDb.SaveChanges();
+                    
+                    // Add to our in-memory list for future comparisons
+                    baseFiles.Add(newFile);
+                    
+                    fileMapping[duplicateFile.Id] = newFile.Id;
+                    result.FilesMerged++;
+                }
+                else
+                {
+                    // Update existing file if duplicate has newer info
+                    if (duplicateFile.LastModified > existingFile.LastModified)
+                    {
+                        existingFile.LastModified = duplicateFile.LastModified;
+                        existingFile.FileSize = duplicateFile.FileSize;
+                    }
+                    
+                    fileMapping[duplicateFile.Id] = existingFile.Id;
+                }
+            }
+
+            // Merge file-tag associations
+            var existingAssociations = baseDb.LocalFileTags
+                .Select(lft => new { lft.LocalFileRecordId, lft.LocalTagId })
+                .ToHashSet();
+
+            foreach (var duplicateFile in duplicateFiles)
+            {
+                if (!fileMapping.ContainsKey(duplicateFile.Id))
+                    continue;
+
+                var newFileId = fileMapping[duplicateFile.Id];
+
+                foreach (var fileTag in duplicateFile.LocalFileTags)
+                {
+                    if (!tagMapping.ContainsKey(fileTag.LocalTagId))
+                        continue;
+
+                    var newTagId = tagMapping[fileTag.LocalTagId];
+                    var association = new { LocalFileRecordId = newFileId, LocalTagId = newTagId };
+
+                    if (!existingAssociations.Contains(association))
+                    {
+                        baseDb.LocalFileTags.Add(new LocalFileTag
+                        {
+                            LocalFileRecordId = newFileId,
+                            LocalTagId = newTagId
+                        });
+                        result.AssociationsMerged++;
+                    }
+                }
+            }
+
+            baseDb.SaveChanges();
+        }
+    }
+
+    /// <summary>
+    /// Result of database merge operation
+    /// </summary>
+    public class DatabaseMergeResult
+    {
+        public bool Success { get; set; }
+        public int DirectoriesWithDuplicates { get; set; }
+        public int DuplicateDatabasesFound { get; set; }
+        public int DuplicateDatabasesDeleted { get; set; }
+        public int TagsMerged { get; set; }
+        public int FilesMerged { get; set; }
+        public int AssociationsMerged { get; set; }
+        public List<string> Errors { get; set; } = new List<string>();
     }
 
     /// <summary>

@@ -6,6 +6,9 @@
         WindowStartupLocation="CenterScreen"
         StateChanged="Window_StateChanged"
         Closing="Window_Closing">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+    </Window.Resources>
     <Grid>
         <!-- System Tray Icon -->
         <tb:TaskbarIcon x:Name="TrayIcon"
@@ -27,20 +30,40 @@
                 <Grid Margin="10">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Text="Watched Directories" FontSize="16" FontWeight="Bold" Margin="0,0,0,10"/>
+                    
+                    <StackPanel Grid.Row="1" Orientation="Vertical" Margin="0,0,0,10">
+                        <TextBlock x:Name="CurrentDatabaseLabel" Text="Database for selected directory:" 
+                                   FontSize="12" Foreground="DarkGray" Margin="0,0,0,5"/>
+                        <TextBlock x:Name="CurrentDatabasePath" Text="Select a directory to view its database path" 
+                                   FontSize="11" Foreground="Blue" FontStyle="Italic" TextWrapping="Wrap"/>
+                    </StackPanel>
 
-                    <Grid Grid.Row="1">
+                    <Grid Grid.Row="2">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
                         <ListBox x:Name="DirectoriesListBox" Grid.Column="0" 
-                                 SelectionChanged="DirectoriesListBox_SelectionChanged"/>
+                                 SelectionChanged="DirectoriesListBox_SelectionChanged"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Vertical" Margin="5">
+                                        <TextBlock Text="{Binding DirectoryPath}" FontWeight="Bold" FontSize="12"/>
+                                        <TextBlock Text="{Binding DatabasePath}" FontSize="10" Foreground="{Binding StatusColor}" Margin="10,2,0,0"/>
+                                        <TextBlock Text="{Binding WarningMessage}" FontSize="10" Foreground="Orange" Margin="10,2,0,0" 
+                                                   Visibility="{Binding HasWarning, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
 
                         <StackPanel Grid.Column="1" Width="150">
                             <Button x:Name="AddDirectoryButton" Content="Add Directory" Click="AddDirectory_Click"/>
@@ -48,12 +71,14 @@
                             <Button x:Name="RefreshButton" Content="Refresh" Click="Refresh_Click" Margin="5,20,5,5"/>
                             <Button x:Name="ScanForExistingButton" Content="Scan for Existing Databases" Click="ScanForExisting_Click" Margin="5,5,5,5" 
                                     ToolTip="Automatically discover and import existing .filetagger directories"/>
+                            <Button x:Name="MergeDuplicatesButton" Content="Merge Duplicate Databases" Click="MergeDuplicates_Click" Margin="5,5,5,5" 
+                                    ToolTip="Find and merge .filetagger (1), .filetagger (2) etc. into main database"/>
                             <Button x:Name="VerifyFilesButton" Content="Verify Tagged Files" Click="VerifyFiles_Click" Margin="5,5,5,5" 
                                     ToolTip="Check that all tagged files exist and update tag counts"/>
                         </StackPanel>
                     </Grid>
 
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="RefreshContextMenusButton" Content="Refresh Context Menus" Click="RefreshContextMenus_Click" Margin="0,0,10,0"/>
                         <Button x:Name="DiagnoseContextMenusButton" Content="Diagnose Context Menus" Click="DiagnoseContextMenus_Click" Margin="0,0,10,0" 
                                 ToolTip="Show diagnostic information about context menu registration"/>

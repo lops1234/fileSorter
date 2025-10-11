@@ -139,7 +139,92 @@ namespace FileTagger
         private void LoadDirectories()
         {
             var directories = DatabaseManager.Instance.GetAllActiveDirectories();
-            DirectoriesListBox.ItemsSource = directories;
+            var directoryViewModels = new List<DirectoryViewModel>();
+            
+            foreach (var dir in directories)
+            {
+                var viewModel = new DirectoryViewModel
+                {
+                    DirectoryPath = dir,
+                    DatabasePath = Path.Combine(dir, ".filetagger", "tags.db")
+                };
+                
+                // Check if database exists
+                if (File.Exists(viewModel.DatabasePath))
+                {
+                    viewModel.StatusColor = System.Windows.Media.Brushes.Green;
+                }
+                else
+                {
+                    viewModel.StatusColor = System.Windows.Media.Brushes.Red;
+                    viewModel.DatabasePath += " (Not found)";
+                }
+                
+                // Check for duplicates
+                var duplicates = new List<string>();
+                for (int i = 1; i <= 20; i++)
+                {
+                    var dupPath = Path.Combine(dir, $".filetagger ({i})", "tags.db");
+                    if (File.Exists(dupPath))
+                    {
+                        duplicates.Add($".filetagger ({i})");
+                    }
+                }
+                
+                if (duplicates.Any())
+                {
+                    viewModel.HasWarning = true;
+                    viewModel.WarningMessage = $"⚠️ Duplicates found: {string.Join(", ", duplicates)}";
+                    viewModel.StatusColor = System.Windows.Media.Brushes.Orange;
+                }
+                
+                directoryViewModels.Add(viewModel);
+            }
+            
+            DirectoriesListBox.ItemsSource = directoryViewModels;
+            
+            // Update database info if a directory is selected
+            if (DirectoriesListBox.SelectedItem is DirectoryViewModel selectedViewModel)
+            {
+                UpdateDatabaseInfo(selectedViewModel.DirectoryPath);
+            }
+            else
+            {
+                // Show general info when no directory is selected
+                var mainDbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileTagger", "main.db");
+                CurrentDatabaseLabel.Text = "Main Database (stores directory & tag info):";
+                CurrentDatabasePath.Text = mainDbPath;
+                CurrentDatabasePath.Foreground = File.Exists(mainDbPath) 
+                    ? System.Windows.Media.Brushes.Green 
+                    : System.Windows.Media.Brushes.Red;
+            }
+        }
+        
+        private void UpdateDatabaseInfo(string directoryPath)
+        {
+            var dbPath = Path.Combine(directoryPath, ".filetagger", "tags.db");
+            CurrentDatabaseLabel.Text = "Database for selected directory:";
+            CurrentDatabasePath.Text = dbPath;
+            CurrentDatabasePath.Foreground = File.Exists(dbPath) 
+                ? System.Windows.Media.Brushes.Green 
+                : System.Windows.Media.Brushes.Red;
+            
+            // Check for duplicate databases
+            var duplicates = new List<string>();
+            for (int i = 1; i <= 20; i++)
+            {
+                var dupPath = Path.Combine(directoryPath, $".filetagger ({i})", "tags.db");
+                if (File.Exists(dupPath))
+                {
+                    duplicates.Add($".filetagger ({i})");
+                }
+            }
+            
+            if (duplicates.Any())
+            {
+                CurrentDatabasePath.Text += $"\n⚠️ Warning: Found duplicate databases: {string.Join(", ", duplicates)}";
+                CurrentDatabasePath.Foreground = System.Windows.Media.Brushes.Orange;
+            }
         }
 
         private void AddDirectory_Click(object sender, RoutedEventArgs e)
@@ -167,14 +252,14 @@ namespace FileTagger
 
         private void RemoveDirectory_Click(object sender, RoutedEventArgs e)
         {
-            if (DirectoriesListBox.SelectedItem is string selectedPath)
+            if (DirectoriesListBox.SelectedItem is DirectoryViewModel selectedViewModel)
             {
-                var result = MessageBox.Show($"Remove directory '{selectedPath}' from watched list?\nTags unique to this directory will be removed from the main tag list.", 
+                var result = MessageBox.Show($"Remove directory '{selectedViewModel.DirectoryPath}' from watched list?\nTags unique to this directory will be removed from the main tag list.", 
                     "Confirm Removal", MessageBoxButton.YesNo, MessageBoxImage.Question);
                 
                 if (result == MessageBoxResult.Yes)
                 {
-                    DatabaseManager.Instance.RemoveWatchedDirectory(selectedPath);
+                    DatabaseManager.Instance.RemoveWatchedDirectory(selectedViewModel.DirectoryPath);
                     LoadDirectories();
                     LoadTags();
                     LoadTagFilter();
@@ -188,6 +273,22 @@ namespace FileTagger
         private void DirectoriesListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             RemoveDirectoryButton.IsEnabled = DirectoriesListBox.SelectedItem != null;
+            
+            // Update the database path label
+            if (DirectoriesListBox.SelectedItem is DirectoryViewModel selectedViewModel)
+            {
+                UpdateDatabaseInfo(selectedViewModel.DirectoryPath);
+            }
+            else
+            {
+                // Show main database when no directory is selected
+                var mainDbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileTagger", "main.db");
+                CurrentDatabaseLabel.Text = "Main Database (stores directory & tag info):";
+                CurrentDatabasePath.Text = mainDbPath;
+                CurrentDatabasePath.Foreground = File.Exists(mainDbPath) 
+                    ? System.Windows.Media.Brushes.Green 
+                    : System.Windows.Media.Brushes.Red;
+            }
         }
 
         private void RefreshContextMenus_Click(object sender, RoutedEventArgs e)
@@ -228,6 +329,77 @@ namespace FileTagger
         private void Refresh_Click(object sender, RoutedEventArgs e)
         {
             LoadDirectories();
+        }
+
+        private void MergeDuplicates_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var result = MessageBox.Show(
+                    "This will find and merge duplicate .filetagger databases:\n" +
+                    "  • .filetagger (1)\n" +
+                    "  • .filetagger (2)\n" +
+                    "  • etc.\n\n" +
+                    "All tags and files will be merged into the main .filetagger database,\n" +
+                    "then the duplicate databases will be deleted.\n\n" +
+                    "This fixes Google Drive sync conflicts.\n\n" +
+                    "Do you want to continue?",
+                    "Merge Duplicate Databases",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var mergeResult = DatabaseManager.Instance.MergeAllDuplicateFileTaggerDatabases();
+
+                    if (mergeResult.DuplicateDatabasesFound == 0)
+                    {
+                        MessageBox.Show("No duplicate databases found!\n\nYour databases are clean.",
+                            "No Duplicates", MessageBoxButton.OK, MessageBoxImage.Information);
+                        return;
+                    }
+
+                    var message = $"Database merge completed!\n\n" +
+                                 $"Directories checked: {DatabaseManager.Instance.GetAllActiveDirectories().Count}\n" +
+                                 $"Directories with duplicates: {mergeResult.DirectoriesWithDuplicates}\n" +
+                                 $"Duplicate databases found: {mergeResult.DuplicateDatabasesFound}\n" +
+                                 $"Duplicate databases merged: {mergeResult.DuplicateDatabasesDeleted}\n\n" +
+                                 $"Tags merged: {mergeResult.TagsMerged}\n" +
+                                 $"Files merged: {mergeResult.FilesMerged}\n" +
+                                 $"Associations merged: {mergeResult.AssociationsMerged}";
+
+                    if (mergeResult.Errors.Any())
+                    {
+                        message += $"\n\n⚠️ Errors encountered: {mergeResult.Errors.Count}\n" +
+                                  string.Join("\n", mergeResult.Errors.Take(5));
+                        if (mergeResult.Errors.Count > 5)
+                        {
+                            message += $"\n... and {mergeResult.Errors.Count - 5} more errors";
+                        }
+                        
+                        // Check if any errors are about locked databases
+                        if (mergeResult.Errors.Any(e => e.Contains("locked") || e.Contains("being used")))
+                        {
+                            message += "\n\n💡 TIP: Close all applications that might be accessing the databases\n" +
+                                      "(e.g., database viewers, file explorers, other FileTagger instances)\n" +
+                                      "and try again.";
+                        }
+                    }
+
+                    var messageType = mergeResult.Errors.Any() ? MessageBoxImage.Warning : MessageBoxImage.Information;
+                    MessageBox.Show(message, "Merge Complete", MessageBoxButton.OK, messageType);
+
+                    // Refresh the UI to show updated data
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during database merge: {ex.Message}",
+                    "Merge Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void VerifyFiles_Click(object sender, RoutedEventArgs e)
@@ -1046,6 +1218,15 @@ namespace FileTagger
         #endregion
 
         #endregion
+    }
+
+    public class DirectoryViewModel
+    {
+        public string DirectoryPath { get; set; } = string.Empty;
+        public string DatabasePath { get; set; } = string.Empty;
+        public System.Windows.Media.Brush StatusColor { get; set; } = System.Windows.Media.Brushes.Gray;
+        public bool HasWarning { get; set; } = false;
+        public string WarningMessage { get; set; } = string.Empty;
     }
 
     public class FileViewModel

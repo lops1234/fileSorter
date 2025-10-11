@@ -265,6 +265,23 @@ The application minimizes to the system tray when closed, showing a blue folder 
 - Run "Refresh Tags" anytime counts look suspicious
 - Run "Verify Tagged Files" periodically if you frequently move or delete files outside of File Tagger
 
+### Google Drive Sync Conflicts (Duplicate Databases)
+
+**Symptom**: You see `.filetagger (1)`, `.filetagger (2)`, etc. folders created by Google Drive sync conflicts.
+
+**Cause**: Google Drive creates duplicate folders when conflicts occur during synchronization.
+
+**Solution**:
+1. Go to **Settings** tab
+2. Click **"Merge Duplicate Databases"** button
+3. This will:
+   - Find all `.filetagger (1)`, `.filetagger (2)`, etc. folders
+   - Merge all tags and files into the main `.filetagger` database
+   - Delete the duplicate folders automatically
+4. All your tags will be consolidated in one place
+
+**Recommended**: Run this after resolving Google Drive sync conflicts or if you notice duplicate `.filetagger` folders.
+
 ### Database Architecture
 
 **Main Database**: `%APPDATA%\FileTagger\main.db`
