@@ -343,13 +343,17 @@ namespace FileTagger
             try
             {
                 var result = MessageBox.Show(
-                    "This will find and merge duplicate .filetagger databases:\n" +
-                    "  • .filetagger (1)\n" +
-                    "  • .filetagger (2)\n" +
-                    "  • etc.\n\n" +
-                    "All tags and files will be merged into the main .filetagger database,\n" +
-                    "then the duplicate databases will be deleted.\n\n" +
-                    "This fixes Google Drive sync conflicts.\n\n" +
+                    "MERGE: Find and merge duplicate .filetagger databases:\n\n" +
+                    "What it does:\n" +
+                    "  1. Scans ALL watched directories for duplicates like:\n" +
+                    "     • .filetagger (1)\n" +
+                    "     • .filetagger (2)\n" +
+                    "     • etc.\n" +
+                    "  2. Imports all data from duplicates into central database\n" +
+                    "  3. Deletes the duplicate folders\n" +
+                    "  4. Keeps the original .filetagger folder intact\n\n" +
+                    "Use this when you only want to clean up duplicates but\n" +
+                    "keep the original folder database.\n\n" +
                     "Do you want to continue?",
                     "Merge Duplicate Databases",
                     MessageBoxButton.YesNo,
@@ -622,13 +626,17 @@ namespace FileTagger
             try
             {
                 var result = MessageBox.Show(
-                    $"Cleanup folder databases?\n\n" +
+                    $"CLEANUP: Complete reset of folder databases\n\n" +
                     $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
-                    $"This will:\n" +
-                    $"1. Pull all data from folder databases into central database\n" +
-                    $"2. Delete ALL .filetagger directories (including duplicates)\n" +
-                    $"3. Push a clean copy back to the folder\n\n" +
-                    $"This fixes Google Drive sync conflicts.",
+                    $"What it does:\n" +
+                    $"  1. Import ALL data from folder into central database\n" +
+                    $"  2. DELETE ALL .filetagger folders:\n" +
+                    $"     • .filetagger (the original)\n" +
+                    $"     • .filetagger (1), (2), etc. (duplicates)\n" +
+                    $"  3. Create fresh .filetagger with clean database\n\n" +
+                    $"This completely fixes Google Drive sync conflicts\n" +
+                    $"by starting fresh with a single clean database.\n\n" +
+                    $"⚠️ All folder databases will be deleted!",
                     "Cleanup Folder",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning);

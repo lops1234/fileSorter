@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using FileTagger.Data;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace FileTagger.Services
@@ -94,10 +95,10 @@ namespace FileTagger.Services
 
                     // Pull data from folder database if it exists
                     PullFromFolderInternal(centralDb, centralDir);
-                }
-            }
-            catch
-            {
+                        }
+                    }
+                    catch
+                    {
                 // If migration fails, continue with empty central database
             }
         }
@@ -122,11 +123,11 @@ namespace FileTagger.Services
             else
             {
                 var newDir = new CentralDirectory
-                {
-                    DirectoryPath = directoryPath,
-                    IsActive = true,
-                    LastSyncAt = DateTime.UtcNow
-                };
+                        {
+                            DirectoryPath = directoryPath,
+                            IsActive = true,
+                            LastSyncAt = DateTime.UtcNow
+                        };
                 centralDb.Directories.Add(newDir);
                 centralDb.SaveChanges();
 
@@ -252,6 +253,11 @@ namespace FileTagger.Services
             {
                 result.Errors.Add($"Pull failed: {ex.Message}");
             }
+            finally
+            {
+                // Release all connections after pull to allow subsequent delete operations
+                ReleaseAllDatabaseConnections();
+            }
 
             return result;
         }
@@ -349,9 +355,9 @@ namespace FileTagger.Services
                         folderDb.SaveChanges();
                         existingFiles.Add(localFile);
                         result.FilesExported++;
-                    }
-                    else
-                    {
+            }
+            else
+            {
                         // Update if central is newer
                         if (centralFile.LastModified > localFile.LastModified)
                         {
@@ -415,7 +421,7 @@ namespace FileTagger.Services
 
             try
             {
-                // Step 1: Pull all data from folder
+                // Step 1: Pull all data from folder databases into central database
                 var pullResult = PullFromFolder(directoryPath);
                 result.PullResult = pullResult;
 
@@ -425,27 +431,20 @@ namespace FileTagger.Services
                     // Continue anyway to clean up
                 }
 
-                // Step 2: Delete all .filetagger directories
+                // Step 2: Release all database connections before deleting
+                ReleaseAllDatabaseConnections();
+
+                // Step 3: Delete ALL .filetagger directories (including base and all duplicates)
                 var fileTaggerDirs = FindAllFileTaggerDirectories(directoryPath);
                 foreach (var ftDir in fileTaggerDirs)
                 {
-                    try
+                    if (SafeDeleteDirectory(ftDir, result.Errors))
                     {
-                        // Wait for any database connections to close
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
-                        System.Threading.Thread.Sleep(100);
-
-                        Directory.Delete(ftDir, true);
                         result.DirectoriesDeleted++;
-                    }
-                    catch (Exception ex)
-                    {
-                        result.Errors.Add($"Failed to delete {ftDir}: {ex.Message}");
                     }
                 }
 
-                // Step 3: Push clean copy back to folder
+                // Step 4: Push clean copy back to folder (creates fresh .filetagger)
                 var pushResult = PushToFolder(directoryPath);
                 result.PushResult = pushResult;
 
@@ -487,7 +486,7 @@ namespace FileTagger.Services
         {
             var results = new List<PushResult>();
             var directories = GetAllActiveDirectories();
-
+            
             foreach (var dir in directories)
             {
                 results.Add(PushToFolder(dir));
@@ -556,9 +555,9 @@ namespace FileTagger.Services
                 };
                 centralDb.Tags.Add(tag);
                 centralDb.SaveChanges();
-            }
-            else
-            {
+                }
+                else
+                {
                 tag.LastUsedAt = DateTime.UtcNow;
             }
 
@@ -802,14 +801,14 @@ namespace FileTagger.Services
                             continue;
 
                         try
-                        {
-                            var fileInfo = new FileInfo(filePath);
+                {
+                    var fileInfo = new FileInfo(filePath);
                             result.Add(new FileWithTags
-                            {
+                    {
                                 FileName = fileInfo.Name,
                                 FullPath = filePath,
                                 DirectoryPath = dir,
-                                LastModified = fileInfo.LastWriteTime,
+                        LastModified = fileInfo.LastWriteTime,
                                 FileSize = fileInfo.Length,
                                 Tags = new List<string>()
                             });
@@ -959,27 +958,27 @@ namespace FileTagger.Services
                 .Include(f => f.FileTags)
                     .ThenInclude(ft => ft.Tag)
                 .Where(f => f.Directory.IsActive)
-                .ToList();
+                        .ToList();
 
-            foreach (var file in files)
-            {
+                    foreach (var file in files)
+                    {
                 var fullPath = Path.Combine(file.Directory.DirectoryPath, file.RelativePath);
                 result.TotalFilesChecked++;
-
+                        
                 if (!File.Exists(fullPath))
-                {
+                        {
                     result.MissingFiles.Add(fullPath);
                     result.MissingFilesCount++;
-
+                            
                     foreach (var fileTag in file.FileTags)
-                    {
+                            {
                         affectedTags.Add(fileTag.Tag.Name);
-                    }
+                            }
 
                     centralDb.FileRecords.Remove(file);
-                }
-                else
-                {
+                        }
+                        else
+                        {
                     result.ExistingFilesCount++;
                 }
             }
@@ -1035,24 +1034,18 @@ namespace FileTagger.Services
                     result.DirectoriesWithDuplicates++;
                     result.DuplicateDatabasesFound += duplicateDirs.Count;
 
-                    // Pull from all (including duplicates)
+                    // Pull from all (including duplicates) into central database
                     var pullResult = PullFromFolder(dir);
 
-                    // Delete duplicates only
+                    // Release all database connections before deleting
+                    ReleaseAllDatabaseConnections();
+
+                    // Delete duplicates only (keep the original .filetagger)
                     foreach (var dupDir in duplicateDirs)
                     {
-                        try
+                        if (SafeDeleteDirectory(dupDir, result.Errors))
                         {
-                            GC.Collect();
-                            GC.WaitForPendingFinalizers();
-                            System.Threading.Thread.Sleep(100);
-
-                            Directory.Delete(dupDir, true);
                             result.DuplicateDatabasesDeleted++;
-                        }
-                        catch (Exception ex)
-                        {
-                            result.Errors.Add($"Failed to delete {dupDir}: {ex.Message}");
                         }
                     }
 
@@ -1095,7 +1088,7 @@ namespace FileTagger.Services
                         var parentDir = Path.GetDirectoryName(ftDir);
                         if (string.IsNullOrEmpty(parentDir) || existingDirs.Contains(parentDir))
                             continue;
-
+                        
                         var dbFile = Path.Combine(ftDir, "tags.db");
                         if (File.Exists(dbFile))
                         {
@@ -1107,7 +1100,7 @@ namespace FileTagger.Services
                 }
                 catch
                 {
-                    continue;
+                            continue;
                 }
             }
 
@@ -1139,9 +1132,9 @@ namespace FileTagger.Services
                     .Select(d => d.RootDirectory.FullName);
 
                 searchRoots.AddRange(drives);
-            }
-            catch
-            {
+                        }
+                        catch
+                        {
                 searchRoots.Add(Environment.CurrentDirectory);
             }
 
@@ -1184,6 +1177,48 @@ namespace FileTagger.Services
             return duplicates;
         }
 
+        /// <summary>
+        /// Force release all SQLite connections to allow file deletion
+        /// </summary>
+        private void ReleaseAllDatabaseConnections()
+        {
+            // Clear SQLite connection pool to release all file handles
+            SqliteConnection.ClearAllPools();
+            
+            // Force garbage collection to release any remaining references
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            
+            // Give the OS time to release file handles
+            System.Threading.Thread.Sleep(200);
+        }
+
+        /// <summary>
+        /// Safely delete a directory containing database files
+        /// </summary>
+        private bool SafeDeleteDirectory(string directoryPath, List<string> errors)
+            {
+                try
+                {
+                // Release all connections before attempting delete
+                ReleaseAllDatabaseConnections();
+                
+                // Try to delete
+                if (Directory.Exists(directoryPath))
+                {
+                    Directory.Delete(directoryPath, true);
+                    return true;
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"Failed to delete {directoryPath}: {ex.Message}");
+                return false;
+            }
+        }
+
         private void PullFromFolderInternal(CentralDbContext centralDb, CentralDirectory centralDir)
         {
             var fileTaggerDirs = FindAllFileTaggerDirectories(centralDir.DirectoryPath);
@@ -1210,27 +1245,38 @@ namespace FileTagger.Services
         {
             int tagsImported = 0, filesImported = 0, associationsImported = 0;
 
-            // Create a temporary context to read the folder database
-            var connectionString = $"Data Source={dbPath};Mode=ReadOnly";
-            var options = new DbContextOptionsBuilder<DirectoryDbContext>()
-                .UseSqlite(connectionString)
-                .Options;
-
             List<LocalTag> localTags;
             List<LocalFileRecord> localFiles;
 
-            // Read data in separate scope
-            using (var folderDb = new DirectoryDbContext(centralDir.DirectoryPath))
+            // Read data using a direct SQLite connection to avoid connection pooling issues
+            var connectionString = $"Data Source={dbPath};Mode=ReadOnly;Pooling=False";
+
+            // Read data in separate scope with explicit connection management
+            using (var connection = new SqliteConnection(connectionString))
             {
-                folderDb.Database.SetConnectionString(connectionString);
+                connection.Open();
+                
+                var options = new DbContextOptionsBuilder<DirectoryDbContext>()
+                    .UseSqlite(connection)
+                    .Options;
 
-                localTags = folderDb.LocalTags.ToList();
-                localFiles = folderDb.LocalFileRecords
-                    .Include(f => f.LocalFileTags)
-                    .ToList();
+                using (var folderDb = new DirectoryDbContext(centralDir.DirectoryPath))
+                {
+                    folderDb.Database.SetConnectionString(connectionString);
 
-                folderDb.Database.CloseConnection();
+                    localTags = folderDb.LocalTags.ToList();
+                    localFiles = folderDb.LocalFileRecords
+                        .Include(f => f.LocalFileTags)
+                        .ToList();
+
+                    folderDb.Database.CloseConnection();
+                }
+                
+                connection.Close();
             }
+            
+            // Clear the connection from pool immediately
+            SqliteConnection.ClearPool(new SqliteConnection(connectionString));
 
             // Import tags
             var existingTags = centralDb.Tags
@@ -1470,7 +1516,7 @@ namespace FileTagger.Services
         public DateTime LastModified { get; set; }
         public long FileSize { get; set; }
         public List<string> Tags { get; set; } = new List<string>();
-
+        
         public string TagsString => string.Join(", ", Tags);
         public string FileSizeFormatted
         {
