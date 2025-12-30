@@ -65,15 +65,27 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
 
-                        <StackPanel Grid.Column="1" Width="150">
+                        <StackPanel Grid.Column="1" Width="180">
                             <Button x:Name="AddDirectoryButton" Content="Add Directory" Click="AddDirectory_Click"/>
                             <Button x:Name="RemoveDirectoryButton" Content="Remove Directory" Click="RemoveDirectory_Click" IsEnabled="False"/>
                             <Button x:Name="RefreshButton" Content="Refresh" Click="Refresh_Click" Margin="5,20,5,5"/>
                             <Button x:Name="ScanForExistingButton" Content="Scan for Existing Databases" Click="ScanForExisting_Click" Margin="5,5,5,5" 
                                     ToolTip="Automatically discover and import existing .filetagger directories"/>
-                            <Button x:Name="MergeDuplicatesButton" Content="Merge Duplicate Databases" Click="MergeDuplicates_Click" Margin="5,5,5,5" 
+                            
+                            <!-- Sync Operations -->
+                            <TextBlock Text="Folder Sync:" FontWeight="Bold" Margin="5,15,5,5" Foreground="DarkBlue"/>
+                            <Button x:Name="PullFromFolderButton" Content="📥 Pull from Folder" Click="PullFromFolder_Click" Margin="5,2,5,2" 
+                                    ToolTip="Import tags from folder database into central database"/>
+                            <Button x:Name="PushToFolderButton" Content="📤 Push to Folder" Click="PushToFolder_Click" Margin="5,2,5,2" 
+                                    ToolTip="Export tags to folder database for backup/sync"/>
+                            <Button x:Name="CleanupFolderButton" Content="🧹 Cleanup Folder" Click="CleanupFolder_Click" Margin="5,2,5,2" 
+                                    ToolTip="Pull all data, delete folder databases, push clean copy"/>
+                            
+                            <!-- Maintenance -->
+                            <TextBlock Text="Maintenance:" FontWeight="Bold" Margin="5,15,5,5" Foreground="DarkBlue"/>
+                            <Button x:Name="MergeDuplicatesButton" Content="Merge Duplicate Databases" Click="MergeDuplicates_Click" Margin="5,2,5,2" 
                                     ToolTip="Find and merge .filetagger (1), .filetagger (2) etc. into main database"/>
-                            <Button x:Name="VerifyFilesButton" Content="Verify Tagged Files" Click="VerifyFiles_Click" Margin="5,5,5,5" 
+                            <Button x:Name="VerifyFilesButton" Content="Verify Tagged Files" Click="VerifyFiles_Click" Margin="5,2,5,2" 
                                     ToolTip="Check that all tagged files exist and update tag counts"/>
                         </StackPanel>
                     </Grid>

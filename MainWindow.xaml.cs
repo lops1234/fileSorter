@@ -140,24 +140,25 @@ namespace FileTagger
         {
             var directories = DatabaseManager.Instance.GetAllActiveDirectories();
             var directoryViewModels = new List<DirectoryViewModel>();
+            var centralDbPath = DatabaseManager.Instance.GetCentralDatabasePath();
             
             foreach (var dir in directories)
             {
                 var viewModel = new DirectoryViewModel
                 {
                     DirectoryPath = dir,
-                    DatabasePath = Path.Combine(dir, ".filetagger", "tags.db")
+                    DatabasePath = centralDbPath + $" (data for {Path.GetFileName(dir)})"
                 };
                 
-                // Check if database exists
-                if (File.Exists(viewModel.DatabasePath))
+                viewModel.StatusColor = System.Windows.Media.Brushes.Green;
+                
+                // Check for folder databases (old system or for push/pull)
+                var folderDbPath = Path.Combine(dir, ".filetagger", "tags.db");
+                if (File.Exists(folderDbPath))
                 {
-                    viewModel.StatusColor = System.Windows.Media.Brushes.Green;
-                }
-                else
-                {
-                    viewModel.StatusColor = System.Windows.Media.Brushes.Red;
-                    viewModel.DatabasePath += " (Not found)";
+                    viewModel.HasWarning = true;
+                    viewModel.WarningMessage = "📁 Has folder database (can Pull/Push)";
+                    viewModel.StatusColor = System.Windows.Media.Brushes.Blue;
                 }
                 
                 // Check for duplicates
@@ -174,7 +175,7 @@ namespace FileTagger
                 if (duplicates.Any())
                 {
                     viewModel.HasWarning = true;
-                    viewModel.WarningMessage = $"⚠️ Duplicates found: {string.Join(", ", duplicates)}";
+                    viewModel.WarningMessage = $"⚠️ Duplicates found: {string.Join(", ", duplicates)} - Use Cleanup!";
                     viewModel.StatusColor = System.Windows.Media.Brushes.Orange;
                 }
                 
@@ -190,11 +191,10 @@ namespace FileTagger
             }
             else
             {
-                // Show general info when no directory is selected
-                var mainDbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileTagger", "main.db");
-                CurrentDatabaseLabel.Text = "Main Database (stores directory & tag info):";
-                CurrentDatabasePath.Text = mainDbPath;
-                CurrentDatabasePath.Foreground = File.Exists(mainDbPath) 
+                // Show central database info when no directory is selected
+                CurrentDatabaseLabel.Text = "Central Database (all tags stored locally):";
+                CurrentDatabasePath.Text = centralDbPath;
+                CurrentDatabasePath.Foreground = File.Exists(centralDbPath) 
                     ? System.Windows.Media.Brushes.Green 
                     : System.Windows.Media.Brushes.Red;
             }
@@ -202,12 +202,19 @@ namespace FileTagger
         
         private void UpdateDatabaseInfo(string directoryPath)
         {
-            var dbPath = Path.Combine(directoryPath, ".filetagger", "tags.db");
-            CurrentDatabaseLabel.Text = "Database for selected directory:";
-            CurrentDatabasePath.Text = dbPath;
-            CurrentDatabasePath.Foreground = File.Exists(dbPath) 
+            var centralDbPath = DatabaseManager.Instance.GetCentralDatabasePath();
+            CurrentDatabaseLabel.Text = "Central Database (all tags stored here):";
+            CurrentDatabasePath.Text = centralDbPath;
+            CurrentDatabasePath.Foreground = File.Exists(centralDbPath) 
                 ? System.Windows.Media.Brushes.Green 
                 : System.Windows.Media.Brushes.Red;
+            
+            // Check for folder databases
+            var folderDbPath = Path.Combine(directoryPath, ".filetagger", "tags.db");
+            if (File.Exists(folderDbPath))
+            {
+                CurrentDatabasePath.Text += $"\n📁 Folder backup exists: {folderDbPath}";
+            }
             
             // Check for duplicate databases
             var duplicates = new List<string>();
@@ -222,7 +229,7 @@ namespace FileTagger
             
             if (duplicates.Any())
             {
-                CurrentDatabasePath.Text += $"\n⚠️ Warning: Found duplicate databases: {string.Join(", ", duplicates)}";
+                CurrentDatabasePath.Text += $"\n⚠️ Duplicate folder DBs: {string.Join(", ", duplicates)}";
                 CurrentDatabasePath.Foreground = System.Windows.Media.Brushes.Orange;
             }
         }
@@ -281,11 +288,11 @@ namespace FileTagger
             }
             else
             {
-                // Show main database when no directory is selected
-                var mainDbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileTagger", "main.db");
-                CurrentDatabaseLabel.Text = "Main Database (stores directory & tag info):";
-                CurrentDatabasePath.Text = mainDbPath;
-                CurrentDatabasePath.Foreground = File.Exists(mainDbPath) 
+                // Show central database when no directory is selected
+                var centralDbPath = DatabaseManager.Instance.GetCentralDatabasePath();
+                CurrentDatabaseLabel.Text = "Central Database (all tags stored locally):";
+                CurrentDatabasePath.Text = centralDbPath;
+                CurrentDatabasePath.Foreground = File.Exists(centralDbPath) 
                     ? System.Windows.Media.Brushes.Green 
                     : System.Windows.Media.Brushes.Red;
             }
@@ -510,6 +517,158 @@ namespace FileTagger
             }
         }
 
+        private void PullFromFolder_Click(object sender, RoutedEventArgs e)
+        {
+            if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
+            {
+                MessageBox.Show("Please select a directory first.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var result = MessageBox.Show(
+                    $"Pull tags from folder database into central database?\n\n" +
+                    $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
+                    $"This will import all tags from any .filetagger databases in this folder.",
+                    "Pull from Folder",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var pullResult = DatabaseManager.Instance.PullFromFolder(selectedViewModel.DirectoryPath);
+
+                    var message = $"Pull completed!\n\n" +
+                                 $"Databases found: {pullResult.DatabasesFound}\n" +
+                                 $"Databases pulled: {pullResult.DatabasesPulled}\n" +
+                                 $"Tags imported: {pullResult.TagsImported}\n" +
+                                 $"Files imported: {pullResult.FilesImported}\n" +
+                                 $"Associations imported: {pullResult.AssociationsImported}";
+
+                    if (pullResult.Errors.Any())
+                    {
+                        message += $"\n\nErrors: {string.Join("\n", pullResult.Errors.Take(5))}";
+                    }
+
+                    MessageBox.Show(message, "Pull Complete", MessageBoxButton.OK, 
+                        pullResult.Errors.Any() ? MessageBoxImage.Warning : MessageBoxImage.Information);
+
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during pull: {ex.Message}", "Pull Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void PushToFolder_Click(object sender, RoutedEventArgs e)
+        {
+            if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
+            {
+                MessageBox.Show("Please select a directory first.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var result = MessageBox.Show(
+                    $"Push tags to folder database?\n\n" +
+                    $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
+                    $"This will export all tags for this directory to:\n" +
+                    $"{Path.Combine(selectedViewModel.DirectoryPath, ".filetagger", "tags.db")}\n\n" +
+                    $"Use this to backup tags or sync with another computer via cloud storage.",
+                    "Push to Folder",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var pushResult = DatabaseManager.Instance.PushToFolder(selectedViewModel.DirectoryPath);
+
+                    var message = $"Push completed!\n\n" +
+                                 $"Tags exported: {pushResult.TagsExported}\n" +
+                                 $"Files exported: {pushResult.FilesExported}\n" +
+                                 $"Associations exported: {pushResult.AssociationsExported}";
+
+                    if (pushResult.Errors.Any())
+                    {
+                        message += $"\n\nErrors: {string.Join("\n", pushResult.Errors.Take(5))}";
+                    }
+
+                    MessageBox.Show(message, "Push Complete", MessageBoxButton.OK, 
+                        pushResult.Errors.Any() ? MessageBoxImage.Warning : MessageBoxImage.Information);
+
+                    LoadDirectories();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during push: {ex.Message}", "Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void CleanupFolder_Click(object sender, RoutedEventArgs e)
+        {
+            if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
+            {
+                MessageBox.Show("Please select a directory first.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var result = MessageBox.Show(
+                    $"Cleanup folder databases?\n\n" +
+                    $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
+                    $"This will:\n" +
+                    $"1. Pull all data from folder databases into central database\n" +
+                    $"2. Delete ALL .filetagger directories (including duplicates)\n" +
+                    $"3. Push a clean copy back to the folder\n\n" +
+                    $"This fixes Google Drive sync conflicts.",
+                    "Cleanup Folder",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var cleanupResult = DatabaseManager.Instance.CleanupFolder(selectedViewModel.DirectoryPath);
+
+                    var message = $"Cleanup completed!\n\n" +
+                                 $"Directories deleted: {cleanupResult.DirectoriesDeleted}\n";
+
+                    if (cleanupResult.PullResult != null)
+                    {
+                        message += $"\nPull: {cleanupResult.PullResult.TagsImported} tags, {cleanupResult.PullResult.FilesImported} files imported";
+                    }
+
+                    if (cleanupResult.PushResult != null)
+                    {
+                        message += $"\nPush: {cleanupResult.PushResult.TagsExported} tags, {cleanupResult.PushResult.FilesExported} files exported";
+                    }
+
+                    if (cleanupResult.Errors.Any())
+                    {
+                        message += $"\n\nErrors: {string.Join("\n", cleanupResult.Errors.Take(5))}";
+                    }
+
+                    MessageBox.Show(message, "Cleanup Complete", MessageBoxButton.OK, 
+                        cleanupResult.Errors.Any() ? MessageBoxImage.Warning : MessageBoxImage.Information);
+
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during cleanup: {ex.Message}", "Cleanup Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         #endregion
 
         #region Tag Management
@@ -578,30 +737,17 @@ namespace FileTagger
                 
                 if (result == MessageBoxResult.Yes)
                 {
-                    // Delete from all directory databases
-                    var activeDirectories = DatabaseManager.Instance.GetAllActiveDirectories();
-                    foreach (var directoryPath in activeDirectories)
+                    try
                     {
-                        try
-                        {
-                            using var dirDb = DatabaseManager.Instance.GetDirectoryDb(directoryPath);
-                            var localTag = dirDb.LocalTags.FirstOrDefault(t => t.Name == selectedTag.Name);
-                            if (localTag != null)
-                            {
-                                dirDb.LocalTags.Remove(localTag);
-                                dirDb.SaveChanges();
-                            }
-                        }
-                        catch
-                        {
-                            // Continue with other directories if one fails
-                        }
+                        // Delete tag from central database
+                        DatabaseManager.Instance.DeleteTag(selectedTag.Name);
+                        LoadTags();
+                        LoadTagFilter();
                     }
-                    
-                    // Resync all tags
-                    DatabaseManager.Instance.SynchronizeAllTags();
-                    LoadTags();
-                    LoadTagFilter();
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Error deleting tag: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
                 }
             }
         }

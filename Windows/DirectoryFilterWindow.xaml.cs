@@ -6,7 +6,6 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using FileTagger.Services;
-using Microsoft.EntityFrameworkCore;
 
 namespace FileTagger.Windows
 {
@@ -160,30 +159,12 @@ namespace FileTagger.Windows
             
             try
             {
-                // Find the appropriate watched directory for this path
-                var watchedDirectories = Services.DatabaseManager.Instance.GetAllActiveDirectories();
-                var applicableWatchedDir = watchedDirectories
-                    .Where(wd => _directoryPath.StartsWith(wd, StringComparison.OrdinalIgnoreCase))
-                    .OrderByDescending(wd => wd.Length) // Most specific first
-                    .FirstOrDefault();
-                
-                if (string.IsNullOrEmpty(applicableWatchedDir))
-                {
-                    MessageBox.Show("This directory is not within any watched directory. Please add a parent directory to File Tagger settings first.", 
-                        "Directory Not Watched", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return new List<FileTagger.Services.FileWithTags>();
-                }
-
                 // Get all files from the file system in this directory
                 var allFiles = Directory.GetFiles(_directoryPath, "*", SearchOption.AllDirectories);
                 
-                using var dirDb = Services.DatabaseManager.Instance.GetDirectoryDb(applicableWatchedDir);
-                var taggedFilesMap = dirDb.LocalFileRecords
-                    .Include(f => f.LocalFileTags)
-                    .ThenInclude(lft => lft.LocalTag)
-                    .ToDictionary(f => Path.Combine(applicableWatchedDir, f.RelativePath), 
-                                f => f, 
-                                StringComparer.OrdinalIgnoreCase);
+                // Get tagged files from central database
+                var allTaggedFiles = Services.DatabaseManager.Instance.GetAllFilesWithTags();
+                var taggedFilesMap = allTaggedFiles.ToDictionary(f => f.FullPath, f => f, StringComparer.OrdinalIgnoreCase);
 
                 foreach (var filePath in allFiles)
                 {
@@ -195,7 +176,7 @@ namespace FileTagger.Windows
                         // Get tags if file is in database
                         if (taggedFilesMap.TryGetValue(filePath, out var taggedFile))
                         {
-                            tags = taggedFile.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList();
+                            tags = taggedFile.Tags;
                         }
 
                         fileMap[filePath] = new FileTagger.Services.FileWithTags

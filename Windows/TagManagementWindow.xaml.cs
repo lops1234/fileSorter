@@ -101,38 +101,11 @@ namespace FileTagger.Windows
             {
                 try
                 {
-                    // Get the appropriate watched directory for this file
-                    var watchedDirectory = DatabaseManager.Instance.GetWatchedDirectoryForFile(_filePath);
-                    if (string.IsNullOrEmpty(watchedDirectory))
-                    {
-                        MessageBox.Show("This file is not in a watched directory. Please add the directory to File Tagger settings first.", 
-                            "File Tagger", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        return;
-                    }
-
-                    var relativePath = Path.GetRelativePath(watchedDirectory, _filePath);
-
-                    using var dirDb = DatabaseManager.Instance.GetDirectoryDb(watchedDirectory);
-                    var fileRecord = dirDb.LocalFileRecords.FirstOrDefault(f => f.RelativePath == relativePath);
-                    if (fileRecord != null)
-                    {
-                        var tag = dirDb.LocalTags.FirstOrDefault(t => t.Name == selectedTagName);
-                        if (tag != null)
-                        {
-                            var fileTag = dirDb.LocalFileTags.FirstOrDefault(ft => ft.LocalFileRecordId == fileRecord.Id && ft.LocalTagId == tag.Id);
-                            if (fileTag != null)
-                            {
-                                dirDb.LocalFileTags.Remove(fileTag);
-                                dirDb.SaveChanges();
-
-                                // Sync changes to main database
-                                DatabaseManager.Instance.SynchronizeDirectoryTags(watchedDirectory);
-                                
-                                LoadCurrentTags();
-                                LoadAvailableTags();
-                            }
-                        }
-                    }
+                    // Use central database to remove the tag
+                    DatabaseManager.Instance.RemoveTagFromFile(_filePath, selectedTagName);
+                    
+                    LoadCurrentTags();
+                    LoadAvailableTags();
                 }
                 catch (Exception ex)
                 {
