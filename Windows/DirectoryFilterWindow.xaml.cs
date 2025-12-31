@@ -545,7 +545,9 @@ namespace FileTagger.Windows
         {
             if (TagSuggestionsListBox.SelectedItem is string selectedTag)
             {
-                TagSearchTextBox.Text = selectedTag;
+                // Quote the tag if it contains spaces
+                var quotedTag = TagSearchParser.QuoteTagIfNeeded(selectedTag);
+                TagSearchTextBox.Text = quotedTag;
                 TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Black;
                 TagSuggestionsPopup.IsOpen = false;
                 TagSearchTextBox.Focus();
@@ -559,7 +561,9 @@ namespace FileTagger.Windows
             {
                 if (TagSuggestionsListBox.SelectedItem is string selectedTag)
                 {
-                    TagSearchTextBox.Text = selectedTag;
+                    // Quote the tag if it contains spaces
+                    var quotedTag = TagSearchParser.QuoteTagIfNeeded(selectedTag);
+                    TagSearchTextBox.Text = quotedTag;
                     TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Black;
                     TagSuggestionsPopup.IsOpen = false;
                     TagSearchTextBox.Focus();

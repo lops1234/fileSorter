@@ -1283,7 +1283,7 @@ namespace FileTagger
 
         private bool IsTagDelimiter(char c)
         {
-            return c == ' ' || c == '&' || c == '|' || c == '(' || c == ')';
+            return c == ' ' || c == '&' || c == '|' || c == '(' || c == ')' || c == '\'' || c == '"';
         }
 
         private void TagSuggestion_Selected(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -1299,10 +1299,13 @@ namespace FileTagger
             var currentText = TagSearchTextBox.Text;
             var caretPosition = TagSearchTextBox.CaretIndex;
             
+            // Quote the tag if it contains spaces
+            var quotedTag = TagSearchParser.QuoteTagIfNeeded(selectedTag);
+            
             if (TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray)
             {
                 // Replace placeholder text
-                TagSearchTextBox.Text = selectedTag;
+                TagSearchTextBox.Text = quotedTag;
                 TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Black;
             }
             else
@@ -1314,16 +1317,26 @@ namespace FileTagger
                 var currentTag = ExtractCurrentTag(currentText, caretPosition);
                 if (!string.IsNullOrEmpty(currentTag))
                 {
-                    // Find start position of current tag
+                    // Find start position of current tag (including any opening quote)
                     int start = caretPosition;
                     while (start > 0 && start - 1 < currentText.Length && !IsTagDelimiter(currentText[start - 1]))
                     {
                         start--;
                     }
+                    // Include opening quote if present
+                    if (start > 0 && (currentText[start - 1] == '\'' || currentText[start - 1] == '"'))
+                    {
+                        start--;
+                    }
                     
-                    // Find end position of current tag
+                    // Find end position of current tag (including any closing quote)
                     int end = caretPosition;
                     while (end < currentText.Length && !IsTagDelimiter(currentText[end]))
+                    {
+                        end++;
+                    }
+                    // Include closing quote if present
+                    if (end < currentText.Length && (currentText[end] == '\'' || currentText[end] == '"'))
                     {
                         end++;
                     }
@@ -1336,15 +1349,15 @@ namespace FileTagger
                         start++; // Skip the minus when calculating replacement
                     }
                     
-                    // Replace the current tag
-                    var newText = currentText.Substring(0, start) + prefix + selectedTag + currentText.Substring(end);
+                    // Replace the current tag with the quoted version
+                    var newText = currentText.Substring(0, start) + prefix + quotedTag + currentText.Substring(end);
                     TagSearchTextBox.Text = newText;
-                    TagSearchTextBox.CaretIndex = start + prefix.Length + selectedTag.Length;
+                    TagSearchTextBox.CaretIndex = start + prefix.Length + quotedTag.Length;
                 }
                 else
                 {
                     // Just append the tag
-                    TagSearchTextBox.Text = currentText + " " + selectedTag;
+                    TagSearchTextBox.Text = currentText + " " + quotedTag;
                     TagSearchTextBox.CaretIndex = TagSearchTextBox.Text.Length;
                 }
             }
