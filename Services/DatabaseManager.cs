@@ -721,6 +721,25 @@ namespace FileTagger.Services
         }
 
         /// <summary>
+        /// Update a tag description across all directories
+        /// </summary>
+        public void UpdateTagDescription(string tagName, string newDescription)
+        {
+            using var centralDb = new CentralDbContext();
+
+            var tagsToUpdate = centralDb.Tags
+                .Where(t => t.Name.ToLower() == tagName.ToLower())
+                .ToList();
+
+            foreach (var tag in tagsToUpdate)
+            {
+                tag.Description = newDescription;
+            }
+
+            centralDb.SaveChanges();
+        }
+
+        /// <summary>
         /// Delete a tag from all directories
         /// </summary>
         public void DeleteTag(string tagName)

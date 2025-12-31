@@ -119,16 +119,21 @@
 
                     <DataGrid Grid.Row="2" x:Name="TagsDataGrid" AutoGenerateColumns="False" 
                               CanUserAddRows="False" CanUserDeleteRows="False" 
-                              SelectionMode="Single" Margin="0,10,0,10">
+                              SelectionMode="Single" Margin="0,10,0,10"
+                              BeginningEdit="TagsDataGrid_BeginningEdit"
+                              CellEditEnding="TagsDataGrid_CellEditEnding"
+                              SelectionChanged="TagsDataGrid_SelectionChanged">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200"/>
-                            <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="300"/>
-                            <DataGridTextColumn Header="Usage Count" Binding="{Binding TotalUsageCount}" Width="100"/>
-                            <DataGridTextColumn Header="Source Directories" Binding="{Binding SourceDirectoriesString}" Width="300"/>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name, Mode=TwoWay}" Width="200"/>
+                            <DataGridTextColumn Header="Description" Binding="{Binding Description, Mode=TwoWay}" Width="300"/>
+                            <DataGridTextColumn Header="Usage Count" Binding="{Binding TotalUsageCount}" Width="100" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Source Directories" Binding="{Binding SourceDirectoriesString}" Width="300" IsReadOnly="True"/>
                         </DataGrid.Columns>
                     </DataGrid>
 
                     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="SaveTagChangesButton" Content="Save Changes" Click="SaveTagChanges_Click" 
+                                IsEnabled="False" Margin="0,0,10,0" ToolTip="Save tag name and description changes"/>
                         <Button x:Name="DeleteTagButton" Content="Delete Selected Tag" Click="DeleteTag_Click" IsEnabled="False"/>
                         <Button x:Name="RefreshTagsButton" Content="Refresh Tags" Click="RefreshTags_Click" 
                                 ToolTip="Resynchronize tags and remove orphaned tags with zero file associations"/>

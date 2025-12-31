@@ -16,6 +16,10 @@ namespace FileTagger
     public partial class MainWindow : Window
     {
         private bool _isClosing = false;
+        
+        // Track edited tags: OriginalName -> (NewName, NewDescription)
+        private Dictionary<string, (string NewName, string NewDescription)> _editedTags = new Dictionary<string, (string, string)>();
+        private string _currentEditingTagName = null;
 
         public MainWindow()
         {
@@ -768,6 +772,7 @@ namespace FileTagger
                 // This will clean up tags with zero usage count
                 DatabaseManager.Instance.SynchronizeAllTags();
                 LoadTags();
+                ClearTagEdits();
                 MessageBox.Show("Tags refreshed and orphaned tags cleaned up successfully!", 
                     "Refresh Complete", MessageBoxButton.OK, MessageBoxImage.Information);
             }
@@ -776,6 +781,130 @@ namespace FileTagger
                 MessageBox.Show($"Error refreshing tags: {ex.Message}", 
                     "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        private void TagsDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            DeleteTagButton.IsEnabled = TagsDataGrid.SelectedItem != null;
+        }
+
+        private void TagsDataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
+        {
+            // Store the original tag name when editing starts
+            if (e.Row.Item is TagInfo tagInfo)
+            {
+                _currentEditingTagName = tagInfo.Name;
+            }
+        }
+
+        private void TagsDataGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            if (e.EditAction == DataGridEditAction.Cancel)
+            {
+                _currentEditingTagName = null;
+                return;
+            }
+
+            if (e.Row.Item is TagInfo tagInfo && !string.IsNullOrEmpty(_currentEditingTagName))
+            {
+                // Delay to allow the binding to update first
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    var originalName = _currentEditingTagName;
+                    var newName = tagInfo.Name?.Trim() ?? "";
+                    var newDescription = tagInfo.Description?.Trim() ?? "";
+
+                    // Check if anything actually changed
+                    if (_editedTags.TryGetValue(originalName, out var existing))
+                    {
+                        // Update existing edit
+                        _editedTags[originalName] = (newName, newDescription);
+                    }
+                    else
+                    {
+                        // Track new edit (store original values for comparison)
+                        _editedTags[originalName] = (newName, newDescription);
+                    }
+
+                    // Enable save button if there are any changes
+                    SaveTagChangesButton.IsEnabled = _editedTags.Count > 0;
+                    _currentEditingTagName = null;
+                }), System.Windows.Threading.DispatcherPriority.Background);
+            }
+        }
+
+        private void SaveTagChanges_Click(object sender, RoutedEventArgs e)
+        {
+            if (_editedTags.Count == 0)
+            {
+                MessageBox.Show("No changes to save.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            try
+            {
+                int renamedCount = 0;
+                int descriptionUpdatedCount = 0;
+                var errors = new List<string>();
+
+                foreach (var edit in _editedTags)
+                {
+                    var originalName = edit.Key;
+                    var (newName, newDescription) = edit.Value;
+
+                    // Check if name was changed
+                    if (!string.Equals(originalName, newName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (string.IsNullOrWhiteSpace(newName))
+                        {
+                            errors.Add($"Cannot rename '{originalName}' to empty name.");
+                            continue;
+                        }
+
+                        // Check for duplicate name
+                        var existingTags = DatabaseManager.Instance.GetAllAvailableTags();
+                        if (existingTags.Any(t => t.Name.Equals(newName, StringComparison.OrdinalIgnoreCase) && 
+                                                   !t.Name.Equals(originalName, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            errors.Add($"Cannot rename '{originalName}' to '{newName}' - tag already exists.");
+                            continue;
+                        }
+
+                        DatabaseManager.Instance.UpdateTagName(originalName, newName);
+                        renamedCount++;
+                    }
+
+                    // Update description
+                    DatabaseManager.Instance.UpdateTagDescription(newName.Length > 0 ? newName : originalName, newDescription);
+                    descriptionUpdatedCount++;
+                }
+
+                // Clear edits and reload
+                ClearTagEdits();
+                LoadTags();
+                LoadTagFilter();
+
+                var message = new List<string>();
+                if (renamedCount > 0)
+                    message.Add($"{renamedCount} tag(s) renamed");
+                if (descriptionUpdatedCount > 0)
+                    message.Add($"{descriptionUpdatedCount} description(s) updated");
+                if (errors.Count > 0)
+                    message.Add($"\n\nErrors:\n" + string.Join("\n", errors));
+
+                MessageBox.Show(string.Join(", ", message), "Save Complete", 
+                    MessageBoxButton.OK, errors.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error saving changes: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ClearTagEdits()
+        {
+            _editedTags.Clear();
+            SaveTagChangesButton.IsEnabled = false;
         }
 
         #endregion
