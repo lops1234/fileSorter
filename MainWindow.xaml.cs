@@ -685,10 +685,53 @@ namespace FileTagger
 
         #region Tag Management
 
+        private List<TagInfo> _allTags = new List<TagInfo>();
+
         private void LoadTags()
         {
-            var tags = DatabaseManager.Instance.GetAllAvailableTags();
-            TagsDataGrid.ItemsSource = tags;
+            _allTags = DatabaseManager.Instance.GetAllAvailableTags();
+            ApplyTagFilter();
+        }
+
+        private void ApplyTagFilter()
+        {
+            var filterText = TagFilterTextBox?.Text?.Trim() ?? "";
+            
+            IEnumerable<TagInfo> filteredTags = _allTags;
+            
+            if (!string.IsNullOrEmpty(filterText))
+            {
+                filteredTags = _allTags.Where(t => 
+                    t.Name.Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
+                    (t.Description?.Contains(filterText, StringComparison.OrdinalIgnoreCase) ?? false));
+            }
+
+            var tagsList = filteredTags.ToList();
+            TagsDataGrid.ItemsSource = tagsList;
+            
+            // Update count label
+            if (TagCountLabel != null)
+            {
+                if (string.IsNullOrEmpty(filterText))
+                {
+                    TagCountLabel.Text = $"{_allTags.Count} tags";
+                }
+                else
+                {
+                    TagCountLabel.Text = $"Showing {tagsList.Count} of {_allTags.Count} tags";
+                }
+            }
+        }
+
+        private void TagFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            ApplyTagFilter();
+        }
+
+        private void ClearTagFilter_Click(object sender, RoutedEventArgs e)
+        {
+            TagFilterTextBox.Text = "";
+            ApplyTagFilter();
         }
 
         private void CreateTag_Click(object sender, RoutedEventArgs e)

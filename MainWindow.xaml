@@ -105,6 +105,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
@@ -117,7 +118,16 @@
                         <Button x:Name="CreateTagButton" Content="Create Tag" Click="CreateTag_Click"/>
                     </StackPanel>
 
-                    <DataGrid Grid.Row="2" x:Name="TagsDataGrid" AutoGenerateColumns="False" 
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
+                        <TextBlock Text="🔍 Filter:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <TextBox x:Name="TagFilterTextBox" Width="250" 
+                                 TextChanged="TagFilterTextBox_TextChanged"
+                                 ToolTip="Type to filter tags by name or description"/>
+                        <Button Content="Clear" Click="ClearTagFilter_Click" Margin="5,0,0,0" Padding="10,2"/>
+                        <TextBlock x:Name="TagCountLabel" VerticalAlignment="Center" Margin="15,0,0,0" Foreground="Gray"/>
+                    </StackPanel>
+
+                    <DataGrid Grid.Row="3" x:Name="TagsDataGrid" AutoGenerateColumns="False" 
                               CanUserAddRows="False" CanUserDeleteRows="False" 
                               SelectionMode="Single" Margin="0,10,0,10"
                               BeginningEdit="TagsDataGrid_BeginningEdit"
@@ -131,7 +141,7 @@
                         </DataGrid.Columns>
                     </DataGrid>
 
-                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="SaveTagChangesButton" Content="Save Changes" Click="SaveTagChanges_Click" 
                                 IsEnabled="False" Margin="0,0,10,0" ToolTip="Save tag name and description changes"/>
                         <Button x:Name="DeleteTagButton" Content="Delete Selected Tag" Click="DeleteTag_Click" IsEnabled="False"/>
