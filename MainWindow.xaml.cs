@@ -437,7 +437,7 @@ namespace FileTagger
 
                     if (verificationResult.AffectedTags.Any())
                     {
-                        message += $"\n\nTags with updated counts: {verificationResult.AffectedTags.Count}\n";
+                        message += $"\n\nTags affected: {verificationResult.AffectedTags.Count}\n";
                         var tagList = string.Join(", ", verificationResult.AffectedTags.Take(10));
                         message += tagList;
                         if (verificationResult.AffectedTags.Count > 10)

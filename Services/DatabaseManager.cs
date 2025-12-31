@@ -958,31 +958,42 @@ namespace FileTagger.Services
                 .Include(f => f.FileTags)
                     .ThenInclude(ft => ft.Tag)
                 .Where(f => f.Directory.IsActive)
-                        .ToList();
+                .ToList();
 
-                    foreach (var file in files)
-                    {
+            var fileTagsToRemove = new List<CentralFileTag>();
+            var fileRecordsToRemove = new List<CentralFileRecord>();
+
+            foreach (var file in files)
+            {
                 var fullPath = Path.Combine(file.Directory.DirectoryPath, file.RelativePath);
                 result.TotalFilesChecked++;
-                        
+
                 if (!File.Exists(fullPath))
-                        {
+                {
                     result.MissingFiles.Add(fullPath);
                     result.MissingFilesCount++;
-                            
-                    foreach (var fileTag in file.FileTags)
-                            {
-                        affectedTags.Add(fileTag.Tag.Name);
-                            }
 
-                    centralDb.FileRecords.Remove(file);
-                        }
-                        else
-                        {
+                    // Track affected tags and collect file-tag associations to remove
+                    foreach (var fileTag in file.FileTags)
+                    {
+                        affectedTags.Add(fileTag.Tag.Name);
+                        fileTagsToRemove.Add(fileTag);
+                    }
+
+                    fileRecordsToRemove.Add(file);
+                }
+                else
+                {
                     result.ExistingFilesCount++;
                 }
             }
 
+            // Explicitly remove file-tag associations first (this updates tag counts)
+            centralDb.FileTags.RemoveRange(fileTagsToRemove);
+            centralDb.SaveChanges();
+
+            // Then remove file records
+            centralDb.FileRecords.RemoveRange(fileRecordsToRemove);
             centralDb.SaveChanges();
 
             result.AffectedTags = affectedTags.ToList();
@@ -1488,6 +1499,7 @@ namespace FileTagger.Services
         public int TotalFilesChecked { get; set; }
         public int ExistingFilesCount { get; set; }
         public int MissingFilesCount { get; set; }
+        public int TagsRemoved { get; set; }
         public List<string> MissingFiles { get; set; } = new List<string>();
         public List<string> AffectedTags { get; set; } = new List<string>();
         public List<string> Errors { get; set; } = new List<string>();
