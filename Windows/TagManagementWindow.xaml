@@ -16,7 +16,7 @@
         </Grid.RowDefinitions>
 
         <!-- File Info -->
-        <TextBlock Grid.Row="0" Text="File:" FontWeight="Bold" Margin="0,0,0,5"/>
+        <TextBlock Grid.Row="0" x:Name="FileHeaderTextBlock" Text="File:" FontWeight="Bold" Margin="0,0,0,5"/>
         <TextBlock Grid.Row="1" x:Name="FilePathTextBlock" TextWrapping="Wrap" Margin="0,0,0,15" 
                    Foreground="DarkSlateGray" FontFamily="Consolas"/>
 

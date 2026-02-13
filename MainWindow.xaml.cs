@@ -1258,21 +1258,28 @@ namespace FileTagger
 
         private void ManageFileTags_Click(object sender, RoutedEventArgs e)
         {
-            if (FilesDataGrid.SelectedItem is FileViewModel selectedFile)
+            if (FilesDataGrid.SelectedItems.Count == 0)
             {
-                var tagWindow = new TagManagementWindow(selectedFile.FilePath);
-                tagWindow.Owner = this;
-                if (tagWindow.ShowDialog() == true)
+                MessageBox.Show("Please select one or more files to manage tags.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Collect all selected file paths
+            var selectedFiles = FilesDataGrid.SelectedItems.Cast<FileViewModel>().ToList();
+            var filePaths = selectedFiles.Select(f => f.FilePath).ToList();
+
+            var tagWindow = new TagManagementWindow(filePaths);
+            tagWindow.Owner = this;
+            if (tagWindow.ShowDialog() == true)
+            {
+                // Refresh tags when tags are modified
+                DatabaseManager.Instance.SynchronizeAllTags();
+                LoadTags();
+                // Refresh current search results to show updated tags
+                var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
+                if (!string.IsNullOrEmpty(searchQuery))
                 {
-                    // Refresh tags when tags are modified
-                    DatabaseManager.Instance.SynchronizeAllTags();
-                    LoadTags();
-                    // Refresh current search results to show updated tags
-                    var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
-                    if (!string.IsNullOrEmpty(searchQuery))
-                    {
-                        LoadFiles(searchQuery);
-                    }
+                    LoadFiles(searchQuery);
                 }
             }
         }

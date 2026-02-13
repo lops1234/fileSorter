@@ -10,42 +10,74 @@ namespace FileTagger.Windows
 {
     public partial class TagManagementWindow : Window
     {
-        private readonly string _filePath;
-        private readonly string _originalFilePath;
+        private readonly List<string> _filePaths;
+        private readonly List<string> _originalFilePaths;
 
-        public TagManagementWindow(string filePath)
+        public TagManagementWindow(List<string> filePaths)
         {
             InitializeComponent();
-            _originalFilePath = filePath;
-            _filePath = filePath;
+            _originalFilePaths = new List<string>(filePaths);
+            _filePaths = new List<string>();
             
-            // Check if this is a temp file and show appropriate info
-            if (TempResultsManager.Instance.IsInTempDirectory(filePath))
+            // Process each file path (handle temp files)
+            foreach (var filePath in filePaths)
             {
-                var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePath);
-                if (!string.IsNullOrEmpty(mappedPath))
+                if (TempResultsManager.Instance.IsInTempDirectory(filePath))
                 {
-                    _filePath = mappedPath; // Use original file path for all operations
-                    
-                    // Show temp file info
-                    TempFileInfoPanel.Visibility = System.Windows.Visibility.Visible;
-                    TempFilePathTextBlock.Text = filePath;
-                    OriginalFilePathTextBlock.Text = mappedPath;
-                    FilePathTextBlock.Text = mappedPath;
+                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePath);
+                    if (!string.IsNullOrEmpty(mappedPath))
+                    {
+                        _filePaths.Add(mappedPath);
+                    }
+                    else
+                    {
+                        _filePaths.Add(filePath);
+                    }
                 }
                 else
                 {
-                    FilePathTextBlock.Text = filePath;
+                    _filePaths.Add(filePath);
+                }
+            }
+            
+            // Update UI based on file count
+            if (_filePaths.Count == 1)
+            {
+                FileHeaderTextBlock.Text = "File:";
+                FilePathTextBlock.Text = _filePaths[0];
+                TempFileInfoPanel.Visibility = System.Windows.Visibility.Collapsed;
+                
+                // Check if single file is from temp directory
+                if (TempResultsManager.Instance.IsInTempDirectory(filePaths[0]))
+                {
+                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePaths[0]);
+                    if (!string.IsNullOrEmpty(mappedPath))
+                    {
+                        TempFileInfoPanel.Visibility = System.Windows.Visibility.Visible;
+                        TempFilePathTextBlock.Text = filePaths[0];
+                        OriginalFilePathTextBlock.Text = mappedPath;
+                        FilePathTextBlock.Text = mappedPath;
+                    }
                 }
             }
             else
             {
+                FileHeaderTextBlock.Text = $"Managing {_filePaths.Count} files:";
+                FilePathTextBlock.Text = string.Join("\n", _filePaths.Take(5));
+                if (_filePaths.Count > 5)
+                {
+                    FilePathTextBlock.Text += $"\n... and {_filePaths.Count - 5} more";
+                }
                 TempFileInfoPanel.Visibility = System.Windows.Visibility.Collapsed;
-                FilePathTextBlock.Text = filePath;
             }
             
             LoadCurrentTags();
             LoadAvailableTags();
+        }
+
+        // Convenience constructor for backward compatibility (single file)
+        public TagManagementWindow(string filePath) : this(new List<string> { filePath })
+        {
         }
 
         private void LoadFileRecord()
@@ -56,28 +88,51 @@ namespace FileTagger.Windows
 
         private void LoadCurrentTags()
         {
-            var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
-            var currentFile = allFiles.FirstOrDefault(f => f.FullPath == _filePath);
-            
-            if (currentFile != null)
+            if (_filePaths.Count == 0)
             {
-                CurrentTagsListBox.ItemsSource = currentFile.Tags;
+                CurrentTagsListBox.ItemsSource = new List<string>();
+                return;
+            }
+
+            // Get tags for all files
+            var allFileTags = new List<List<string>>();
+            foreach (var filePath in _filePaths)
+            {
+                var tags = DatabaseManager.Instance.GetTagsForFile(filePath);
+                allFileTags.Add(tags);
+            }
+
+            // Find common tags (intersection) - tags that ALL files have
+            List<string> commonTags;
+            if (allFileTags.Count == 1)
+            {
+                commonTags = allFileTags[0];
             }
             else
             {
-                CurrentTagsListBox.ItemsSource = new List<string>();
+                commonTags = allFileTags
+                    .Skip(1)
+                    .Aggregate(
+                        new HashSet<string>(allFileTags[0], StringComparer.OrdinalIgnoreCase),
+                        (h, e) => { h.IntersectWith(e); return h; }
+                    )
+                    .OrderBy(t => t)
+                    .ToList();
             }
+
+            CurrentTagsListBox.ItemsSource = commonTags;
         }
 
         private void LoadAvailableTags()
         {
             var allTags = DatabaseManager.Instance.GetAllAvailableTags();
-            var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
-            var currentFile = allFiles.FirstOrDefault(f => f.FullPath == _filePath);
-            var currentTags = currentFile?.Tags ?? new List<string>();
+            
+            // Get common tags (tags that all files have)
+            var commonTags = CurrentTagsListBox.ItemsSource as List<string> ?? new List<string>();
 
+            // Show tags that are not common to all files
             var availableTags = allTags
-                .Where(t => !currentTags.Contains(t.Name))
+                .Where(t => !commonTags.Contains(t.Name, StringComparer.OrdinalIgnoreCase))
                 .Select(t => t.Name)
                 .OrderBy(t => t)
                 .ToList();
@@ -101,8 +156,11 @@ namespace FileTagger.Windows
             {
                 try
                 {
-                    // Use central database to remove the tag
-                    DatabaseManager.Instance.RemoveTagFromFile(_filePath, selectedTagName);
+                    // Remove tag from all selected files
+                    foreach (var filePath in _filePaths)
+                    {
+                        DatabaseManager.Instance.RemoveTagFromFile(filePath, selectedTagName);
+                    }
                     
                     LoadCurrentTags();
                     LoadAvailableTags();
@@ -125,7 +183,11 @@ namespace FileTagger.Windows
 
             try
             {
-                DatabaseManager.Instance.AddTagToFile(_filePath, tagName);
+                // Add tag to all selected files
+                foreach (var filePath in _filePaths)
+                {
+                    DatabaseManager.Instance.AddTagToFile(filePath, tagName);
+                }
                 
                 NewTagTextBox.Text = "Create new tag";
                 NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
@@ -149,18 +211,25 @@ namespace FileTagger.Windows
 
             try
             {
-                var directoryPath = Path.GetDirectoryName(_filePath);
-                if (!string.IsNullOrEmpty(directoryPath))
+                // Get unique directories from all files
+                var directories = _filePaths
+                    .Select(f => Path.GetDirectoryName(f))
+                    .Where(d => !string.IsNullOrEmpty(d))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                // Create tag in all applicable directories
+                foreach (var directory in directories)
                 {
-                    DatabaseManager.Instance.CreateStandaloneTag(directoryPath, tagName);
-                    
-                    MessageBox.Show($"Tag '{tagName}' created successfully!", "Tag Created", 
-                        MessageBoxButton.OK, MessageBoxImage.Information);
-                    
-                    NewTagTextBox.Text = "Create new tag";
-                    NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
-                    LoadAvailableTags();
+                    DatabaseManager.Instance.CreateStandaloneTag(directory, tagName);
                 }
+                
+                MessageBox.Show($"Tag '{tagName}' created successfully!", "Tag Created", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                NewTagTextBox.Text = "Create new tag";
+                NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+                LoadAvailableTags();
             }
             catch (Exception ex)
             {
@@ -178,9 +247,13 @@ namespace FileTagger.Windows
 
             try
             {
+                // Add each selected tag to all files
                 foreach (string tagName in AvailableTagsListBox.SelectedItems)
                 {
-                    DatabaseManager.Instance.AddTagToFile(_filePath, tagName);
+                    foreach (var filePath in _filePaths)
+                    {
+                        DatabaseManager.Instance.AddTagToFile(filePath, tagName);
+                    }
                 }
                 
                 LoadCurrentTags();
@@ -195,10 +268,15 @@ namespace FileTagger.Windows
         private void Save_Click(object sender, RoutedEventArgs e)
         {
             // Ensure tags are synchronized when closing
-            var directoryPath = Path.GetDirectoryName(_filePath);
-            if (!string.IsNullOrEmpty(directoryPath))
+            var directories = _filePaths
+                .Select(f => Path.GetDirectoryName(f))
+                .Where(d => !string.IsNullOrEmpty(d))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var directory in directories)
             {
-                DatabaseManager.Instance.SynchronizeDirectoryTags(directoryPath);
+                DatabaseManager.Instance.SynchronizeDirectoryTags(directory);
             }
             
             DialogResult = true;
