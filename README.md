@@ -233,6 +233,55 @@ The application minimizes to the system tray when closed, showing a blue folder 
 
 **Note:** Context menus are automatically removed when you close File Tagger and re-added when you start it. This is the intended behavior to keep your system clean.
 
+### Tags Show Count But Search Returns No Results
+
+**Symptom**: Tags in the Tag Management tab show a usage count (e.g., "5 files"), but when you search for that tag, no files are found.
+
+**Cause**: This happens when files are deleted or moved outside of File Tagger. The database still has records of these files, which count toward tag usage, but they don't exist anymore.
+
+**Solution** - Try these steps in order:
+
+**Step 1: Quick Fix (Try this first)**
+1. Go to **Tag Management** tab
+2. Click **"Refresh Tags"** button
+3. This automatically removes tags with zero actual file associations
+4. Try searching again
+
+**Step 2: Deep Clean (If step 1 doesn't fix it)**
+1. Go to **Settings** tab
+2. Click **"Verify Tagged Files"** button
+3. This will:
+   - Check all tagged files to ensure they exist
+   - Remove database records for missing files
+   - Update tag counts automatically
+4. Go back to Tag Management and verify counts are correct
+5. Try searching again - the counts will now match actual results
+
+**Why Both Steps?**
+- **Refresh Tags**: Removes tags that have no file associations at all (quick)
+- **Verify Tagged Files**: Removes file records for files that no longer exist on disk (thorough)
+
+**Recommendation**: 
+- Run "Refresh Tags" anytime counts look suspicious
+- Run "Verify Tagged Files" periodically if you frequently move or delete files outside of File Tagger
+
+### Google Drive Sync Conflicts (Duplicate Databases)
+
+**Symptom**: You see `.filetagger (1)`, `.filetagger (2)`, etc. folders created by Google Drive sync conflicts.
+
+**Cause**: Google Drive creates duplicate folders when conflicts occur during synchronization.
+
+**Solution**:
+1. Go to **Settings** tab
+2. Click **"Merge Duplicate Databases"** button
+3. This will:
+   - Find all `.filetagger (1)`, `.filetagger (2)`, etc. folders
+   - Merge all tags and files into the main `.filetagger` database
+   - Delete the duplicate folders automatically
+4. All your tags will be consolidated in one place
+
+**Recommended**: Run this after resolving Google Drive sync conflicts or if you notice duplicate `.filetagger` folders.
+
 ### Database Architecture
 
 **Main Database**: `%APPDATA%\FileTagger\main.db`

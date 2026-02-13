@@ -1,0 +1,9 @@
+@echo off
+powershell -ExecutionPolicy Bypass -File build-release.ps1
+
+
+
+
+
+
+

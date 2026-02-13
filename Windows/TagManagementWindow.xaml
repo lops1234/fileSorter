@@ -16,7 +16,7 @@
         </Grid.RowDefinitions>
 
         <!-- File Info -->
-        <TextBlock Grid.Row="0" Text="File:" FontWeight="Bold" Margin="0,0,0,5"/>
+        <TextBlock Grid.Row="0" x:Name="FileHeaderTextBlock" Text="File:" FontWeight="Bold" Margin="0,0,0,5"/>
         <TextBlock Grid.Row="1" x:Name="FilePathTextBlock" TextWrapping="Wrap" Margin="0,0,0,15" 
                    Foreground="DarkSlateGray" FontFamily="Consolas"/>
 
@@ -57,7 +57,8 @@
         <!-- Current Tags -->
         <TextBlock Grid.Row="3" Text="Current Tags:" FontWeight="Bold" Margin="0,0,0,5"/>
         <ListBox Grid.Row="3" x:Name="CurrentTagsListBox" Margin="0,25,0,0" 
-                 SelectionChanged="CurrentTagsListBox_SelectionChanged">
+                 SelectionChanged="CurrentTagsListBox_SelectionChanged"
+                 DisplayMemberPath=".">
             <ListBox.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="Remove Tag" Click="RemoveTag_Click"/>
@@ -79,7 +80,22 @@
             </Grid.RowDefinitions>
 
             <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
-                <TextBox x:Name="NewTagTextBox" Width="200" Text="Create new tag" Foreground="Gray" GotFocus="TextBox_GotFocus" LostFocus="TextBox_LostFocus"/>
+                <Grid>
+                    <TextBox x:Name="NewTagTextBox" Width="200" Text="Create new tag" Foreground="Gray" 
+                             GotFocus="TextBox_GotFocus" LostFocus="TextBox_LostFocus"
+                             KeyUp="NewTagTextBox_KeyUp"/>
+                    <Popup x:Name="TagSuggestionsPopup" 
+                           PlacementTarget="{Binding ElementName=NewTagTextBox}"
+                           Placement="Bottom" 
+                           IsOpen="False"
+                           StaysOpen="False">
+                        <Border Background="White" BorderBrush="Gray" BorderThickness="1" MaxHeight="200">
+                            <ListBox x:Name="TagSuggestionsListBox" 
+                                     MouseLeftButtonUp="TagSuggestion_Selected"
+                                     KeyUp="TagSuggestionsListBox_KeyUp"/>
+                        </Border>
+                    </Popup>
+                </Grid>
                 <Button x:Name="CreateAndAddTagButton" Content="Create &amp; Add" Click="CreateAndAddTag_Click" Margin="10,0,0,0"/>
                 <Button x:Name="CreateOnlyTagButton" Content="Create Only" Click="CreateOnlyTag_Click" Margin="5,0,0,0" ToolTip="Create tag without adding to this file"/>
                 <TextBlock Text="OR" VerticalAlignment="Center" Margin="15,0"/>

@@ -16,6 +16,10 @@ namespace FileTagger
     public partial class MainWindow : Window
     {
         private bool _isClosing = false;
+        
+        // Track edited tags: OriginalName -> (NewName, NewDescription)
+        private Dictionary<string, (string NewName, string NewDescription)> _editedTags = new Dictionary<string, (string, string)>();
+        private string _currentEditingTagName = null;
 
         public MainWindow()
         {
@@ -139,7 +143,99 @@ namespace FileTagger
         private void LoadDirectories()
         {
             var directories = DatabaseManager.Instance.GetAllActiveDirectories();
-            DirectoriesListBox.ItemsSource = directories;
+            var directoryViewModels = new List<DirectoryViewModel>();
+            var centralDbPath = DatabaseManager.Instance.GetCentralDatabasePath();
+            
+            foreach (var dir in directories)
+            {
+                var viewModel = new DirectoryViewModel
+                {
+                    DirectoryPath = dir,
+                    DatabasePath = centralDbPath + $" (data for {Path.GetFileName(dir)})"
+                };
+                
+                viewModel.StatusColor = System.Windows.Media.Brushes.Green;
+                
+                // Check for folder databases (old system or for push/pull)
+                var folderDbPath = Path.Combine(dir, ".filetagger", "tags.db");
+                if (File.Exists(folderDbPath))
+                {
+                    viewModel.HasWarning = true;
+                    viewModel.WarningMessage = "📁 Has folder database (can Pull/Push)";
+                    viewModel.StatusColor = System.Windows.Media.Brushes.Blue;
+                }
+                
+                // Check for duplicates
+                var duplicates = new List<string>();
+                for (int i = 1; i <= 20; i++)
+                {
+                    var dupPath = Path.Combine(dir, $".filetagger ({i})", "tags.db");
+                    if (File.Exists(dupPath))
+                    {
+                        duplicates.Add($".filetagger ({i})");
+                    }
+                }
+                
+                if (duplicates.Any())
+                {
+                    viewModel.HasWarning = true;
+                    viewModel.WarningMessage = $"⚠️ Duplicates found: {string.Join(", ", duplicates)} - Use Cleanup!";
+                    viewModel.StatusColor = System.Windows.Media.Brushes.Orange;
+                }
+                
+                directoryViewModels.Add(viewModel);
+            }
+            
+            DirectoriesListBox.ItemsSource = directoryViewModels;
+            
+            // Update database info if a directory is selected
+            if (DirectoriesListBox.SelectedItem is DirectoryViewModel selectedViewModel)
+            {
+                UpdateDatabaseInfo(selectedViewModel.DirectoryPath);
+            }
+            else
+            {
+                // Show central database info when no directory is selected
+                CurrentDatabaseLabel.Text = "Central Database (all tags stored locally):";
+                CurrentDatabasePath.Text = centralDbPath;
+                CurrentDatabasePath.Foreground = File.Exists(centralDbPath) 
+                    ? System.Windows.Media.Brushes.Green 
+                    : System.Windows.Media.Brushes.Red;
+            }
+        }
+        
+        private void UpdateDatabaseInfo(string directoryPath)
+        {
+            var centralDbPath = DatabaseManager.Instance.GetCentralDatabasePath();
+            CurrentDatabaseLabel.Text = "Central Database (all tags stored here):";
+            CurrentDatabasePath.Text = centralDbPath;
+            CurrentDatabasePath.Foreground = File.Exists(centralDbPath) 
+                ? System.Windows.Media.Brushes.Green 
+                : System.Windows.Media.Brushes.Red;
+            
+            // Check for folder databases
+            var folderDbPath = Path.Combine(directoryPath, ".filetagger", "tags.db");
+            if (File.Exists(folderDbPath))
+            {
+                CurrentDatabasePath.Text += $"\n📁 Folder backup exists: {folderDbPath}";
+            }
+            
+            // Check for duplicate databases
+            var duplicates = new List<string>();
+            for (int i = 1; i <= 20; i++)
+            {
+                var dupPath = Path.Combine(directoryPath, $".filetagger ({i})", "tags.db");
+                if (File.Exists(dupPath))
+                {
+                    duplicates.Add($".filetagger ({i})");
+                }
+            }
+            
+            if (duplicates.Any())
+            {
+                CurrentDatabasePath.Text += $"\n⚠️ Duplicate folder DBs: {string.Join(", ", duplicates)}";
+                CurrentDatabasePath.Foreground = System.Windows.Media.Brushes.Orange;
+            }
         }
 
         private void AddDirectory_Click(object sender, RoutedEventArgs e)
@@ -167,14 +263,14 @@ namespace FileTagger
 
         private void RemoveDirectory_Click(object sender, RoutedEventArgs e)
         {
-            if (DirectoriesListBox.SelectedItem is string selectedPath)
+            if (DirectoriesListBox.SelectedItem is DirectoryViewModel selectedViewModel)
             {
-                var result = MessageBox.Show($"Remove directory '{selectedPath}' from watched list?\nTags unique to this directory will be removed from the main tag list.", 
+                var result = MessageBox.Show($"Remove directory '{selectedViewModel.DirectoryPath}' from watched list?\nTags unique to this directory will be removed from the main tag list.", 
                     "Confirm Removal", MessageBoxButton.YesNo, MessageBoxImage.Question);
                 
                 if (result == MessageBoxResult.Yes)
                 {
-                    DatabaseManager.Instance.RemoveWatchedDirectory(selectedPath);
+                    DatabaseManager.Instance.RemoveWatchedDirectory(selectedViewModel.DirectoryPath);
                     LoadDirectories();
                     LoadTags();
                     LoadTagFilter();
@@ -188,6 +284,22 @@ namespace FileTagger
         private void DirectoriesListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             RemoveDirectoryButton.IsEnabled = DirectoriesListBox.SelectedItem != null;
+            
+            // Update the database path label
+            if (DirectoriesListBox.SelectedItem is DirectoryViewModel selectedViewModel)
+            {
+                UpdateDatabaseInfo(selectedViewModel.DirectoryPath);
+            }
+            else
+            {
+                // Show central database when no directory is selected
+                var centralDbPath = DatabaseManager.Instance.GetCentralDatabasePath();
+                CurrentDatabaseLabel.Text = "Central Database (all tags stored locally):";
+                CurrentDatabasePath.Text = centralDbPath;
+                CurrentDatabasePath.Foreground = File.Exists(centralDbPath) 
+                    ? System.Windows.Media.Brushes.Green 
+                    : System.Windows.Media.Brushes.Red;
+            }
         }
 
         private void RefreshContextMenus_Click(object sender, RoutedEventArgs e)
@@ -228,6 +340,144 @@ namespace FileTagger
         private void Refresh_Click(object sender, RoutedEventArgs e)
         {
             LoadDirectories();
+        }
+
+        private void MergeDuplicates_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var result = MessageBox.Show(
+                    "MERGE: Find and merge duplicate .filetagger databases:\n\n" +
+                    "What it does:\n" +
+                    "  1. Scans ALL watched directories for duplicates like:\n" +
+                    "     • .filetagger (1)\n" +
+                    "     • .filetagger (2)\n" +
+                    "     • etc.\n" +
+                    "  2. Imports all data from duplicates into central database\n" +
+                    "  3. Deletes the duplicate folders\n" +
+                    "  4. Keeps the original .filetagger folder intact\n\n" +
+                    "Use this when you only want to clean up duplicates but\n" +
+                    "keep the original folder database.\n\n" +
+                    "Do you want to continue?",
+                    "Merge Duplicate Databases",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var mergeResult = DatabaseManager.Instance.MergeAllDuplicateFileTaggerDatabases();
+
+                    if (mergeResult.DuplicateDatabasesFound == 0)
+                    {
+                        MessageBox.Show("No duplicate databases found!\n\nYour databases are clean.",
+                            "No Duplicates", MessageBoxButton.OK, MessageBoxImage.Information);
+                        return;
+                    }
+
+                    var message = $"Database merge completed!\n\n" +
+                                 $"Directories checked: {DatabaseManager.Instance.GetAllActiveDirectories().Count}\n" +
+                                 $"Directories with duplicates: {mergeResult.DirectoriesWithDuplicates}\n" +
+                                 $"Duplicate databases found: {mergeResult.DuplicateDatabasesFound}\n" +
+                                 $"Duplicate databases merged: {mergeResult.DuplicateDatabasesDeleted}\n\n" +
+                                 $"Tags merged: {mergeResult.TagsMerged}\n" +
+                                 $"Files merged: {mergeResult.FilesMerged}\n" +
+                                 $"Associations merged: {mergeResult.AssociationsMerged}";
+
+                    if (mergeResult.Errors.Any())
+                    {
+                        message += $"\n\n⚠️ Errors encountered: {mergeResult.Errors.Count}\n" +
+                                  string.Join("\n", mergeResult.Errors.Take(5));
+                        if (mergeResult.Errors.Count > 5)
+                        {
+                            message += $"\n... and {mergeResult.Errors.Count - 5} more errors";
+                        }
+                        
+                        // Check if any errors are about locked databases
+                        if (mergeResult.Errors.Any(e => e.Contains("locked") || e.Contains("being used")))
+                        {
+                            message += "\n\n💡 TIP: Close all applications that might be accessing the databases\n" +
+                                      "(e.g., database viewers, file explorers, other FileTagger instances)\n" +
+                                      "and try again.";
+                        }
+                    }
+
+                    var messageType = mergeResult.Errors.Any() ? MessageBoxImage.Warning : MessageBoxImage.Information;
+                    MessageBox.Show(message, "Merge Complete", MessageBoxButton.OK, messageType);
+
+                    // Refresh the UI to show updated data
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during database merge: {ex.Message}",
+                    "Merge Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void VerifyFiles_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var result = MessageBox.Show(
+                    "This will check all tagged files to ensure they still exist.\n\n" +
+                    "Missing files will be removed from the database and tag counts will be updated.\n\n" +
+                    "This fixes issues where tags show a count but searching returns no results.\n\n" +
+                    "Do you want to continue?",
+                    "Verify Tagged Files",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var verificationResult = DatabaseManager.Instance.VerifyAndCleanupTaggedFiles();
+
+                    var message = $"File verification completed!\n\n" +
+                                 $"Total files checked: {verificationResult.TotalFilesChecked}\n" +
+                                 $"Existing files: {verificationResult.ExistingFilesCount}\n" +
+                                 $"Missing files removed: {verificationResult.MissingFilesCount}";
+
+                    if (verificationResult.AffectedTags.Any())
+                    {
+                        message += $"\n\nTags affected: {verificationResult.AffectedTags.Count}\n";
+                        var tagList = string.Join(", ", verificationResult.AffectedTags.Take(10));
+                        message += tagList;
+                        if (verificationResult.AffectedTags.Count > 10)
+                        {
+                            message += $", and {verificationResult.AffectedTags.Count - 10} more...";
+                        }
+                    }
+
+                    if (verificationResult.Errors.Any())
+                    {
+                        message += $"\n\nErrors encountered: {verificationResult.Errors.Count}\n" +
+                                  string.Join("\n", verificationResult.Errors.Take(5));
+                        if (verificationResult.Errors.Count > 5)
+                        {
+                            message += $"\n... and {verificationResult.Errors.Count - 5} more errors";
+                        }
+                    }
+
+                    if (verificationResult.MissingFilesCount > 0)
+                    {
+                        message += "\n\nTag counts have been updated. Try searching again!";
+                    }
+
+                    MessageBox.Show(message, "Verification Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                    // Refresh the UI to show updated data
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during file verification: {ex.Message}",
+                    "Verification Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void ScanForExisting_Click(object sender, RoutedEventArgs e)
@@ -275,14 +525,232 @@ namespace FileTagger
             }
         }
 
+        private void PullFromFolder_Click(object sender, RoutedEventArgs e)
+        {
+            if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
+            {
+                MessageBox.Show("Please select a directory first.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var result = MessageBox.Show(
+                    $"Pull tags from folder database into central database?\n\n" +
+                    $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
+                    $"This will import all tags from any .filetagger databases in this folder.",
+                    "Pull from Folder",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var pullResult = DatabaseManager.Instance.PullFromFolder(selectedViewModel.DirectoryPath);
+
+                    var message = $"Pull completed!\n\n" +
+                                 $"Databases found: {pullResult.DatabasesFound}\n" +
+                                 $"Databases pulled: {pullResult.DatabasesPulled}\n" +
+                                 $"Tags imported: {pullResult.TagsImported}\n" +
+                                 $"Files imported: {pullResult.FilesImported}\n" +
+                                 $"Associations imported: {pullResult.AssociationsImported}";
+
+                    if (pullResult.Errors.Any())
+                    {
+                        message += $"\n\nErrors: {string.Join("\n", pullResult.Errors.Take(5))}";
+                    }
+
+                    MessageBox.Show(message, "Pull Complete", MessageBoxButton.OK, 
+                        pullResult.Errors.Any() ? MessageBoxImage.Warning : MessageBoxImage.Information);
+
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during pull: {ex.Message}", "Pull Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void PushToFolder_Click(object sender, RoutedEventArgs e)
+        {
+            if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
+            {
+                MessageBox.Show("Please select a directory first.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var result = MessageBox.Show(
+                    $"Push tags to folder database?\n\n" +
+                    $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
+                    $"This will export all tags for this directory to:\n" +
+                    $"{Path.Combine(selectedViewModel.DirectoryPath, ".filetagger", "tags.db")}\n\n" +
+                    $"Use this to backup tags or sync with another computer via cloud storage.",
+                    "Push to Folder",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var pushResult = DatabaseManager.Instance.PushToFolder(selectedViewModel.DirectoryPath);
+
+                    var message = $"Push completed!\n\n" +
+                                 $"Tags exported: {pushResult.TagsExported}\n" +
+                                 $"Files exported: {pushResult.FilesExported}\n" +
+                                 $"Associations exported: {pushResult.AssociationsExported}";
+
+                    if (pushResult.Errors.Any())
+                    {
+                        message += $"\n\nErrors: {string.Join("\n", pushResult.Errors.Take(5))}";
+                    }
+
+                    MessageBox.Show(message, "Push Complete", MessageBoxButton.OK, 
+                        pushResult.Errors.Any() ? MessageBoxImage.Warning : MessageBoxImage.Information);
+
+                    LoadDirectories();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during push: {ex.Message}", "Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void CleanupFolder_Click(object sender, RoutedEventArgs e)
+        {
+            if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
+            {
+                MessageBox.Show("Please select a directory first.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var result = MessageBox.Show(
+                    $"CLEANUP: Complete reset of folder databases\n\n" +
+                    $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
+                    $"What it does:\n" +
+                    $"  1. Import ALL data from folder into central database\n" +
+                    $"  2. Verify files exist and remove entries for missing files\n" +
+                    $"  3. DELETE ALL .filetagger folders:\n" +
+                    $"     • .filetagger (the original)\n" +
+                    $"     • .filetagger (1), (2), etc. (duplicates)\n" +
+                    $"  4. Create fresh .filetagger with clean database\n\n" +
+                    $"This completely fixes Google Drive sync conflicts\n" +
+                    $"by starting fresh with a single clean database.\n\n" +
+                    $"⚠️ All folder databases will be deleted!\n" +
+                    $"⚠️ Entries for missing files will be removed!",
+                    "Cleanup Folder",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    var cleanupResult = DatabaseManager.Instance.CleanupFolder(selectedViewModel.DirectoryPath);
+
+                    var message = $"Cleanup completed!\n\n" +
+                                 $"Directories deleted: {cleanupResult.DirectoriesDeleted}\n";
+
+                    if (cleanupResult.PullResult != null)
+                    {
+                        message += $"\nPull: {cleanupResult.PullResult.TagsImported} tags, {cleanupResult.PullResult.FilesImported} files imported";
+                    }
+
+                    if (cleanupResult.VerificationResult != null)
+                    {
+                        message += $"\n\nVerification:";
+                        message += $"\n  Files checked: {cleanupResult.VerificationResult.TotalFilesChecked}";
+                        message += $"\n  Files exist: {cleanupResult.VerificationResult.ExistingFilesCount}";
+                        message += $"\n  Files removed: {cleanupResult.VerificationResult.MissingFilesCount}";
+                        
+                        if (cleanupResult.VerificationResult.AffectedTags.Any())
+                        {
+                            message += $"\n  Affected tags: {string.Join(", ", cleanupResult.VerificationResult.AffectedTags.Take(5))}";
+                            if (cleanupResult.VerificationResult.AffectedTags.Count > 5)
+                            {
+                                message += $" (+{cleanupResult.VerificationResult.AffectedTags.Count - 5} more)";
+                            }
+                        }
+                    }
+
+                    if (cleanupResult.PushResult != null)
+                    {
+                        message += $"\n\nPush: {cleanupResult.PushResult.TagsExported} tags, {cleanupResult.PushResult.FilesExported} files exported";
+                    }
+
+                    if (cleanupResult.Errors.Any())
+                    {
+                        message += $"\n\nErrors: {string.Join("\n", cleanupResult.Errors.Take(5))}";
+                    }
+
+                    MessageBox.Show(message, "Cleanup Complete", MessageBoxButton.OK, 
+                        cleanupResult.Errors.Any() ? MessageBoxImage.Warning : MessageBoxImage.Information);
+
+                    LoadDirectories();
+                    LoadTags();
+                    LoadTagFilter();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during cleanup: {ex.Message}", "Cleanup Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         #endregion
 
         #region Tag Management
 
+        private List<TagInfo> _allTags = new List<TagInfo>();
+
         private void LoadTags()
         {
-            var tags = DatabaseManager.Instance.GetAllAvailableTags();
-            TagsDataGrid.ItemsSource = tags;
+            _allTags = DatabaseManager.Instance.GetAllAvailableTags();
+            ApplyTagFilter();
+        }
+
+        private void ApplyTagFilter()
+        {
+            var filterText = TagFilterTextBox?.Text?.Trim() ?? "";
+            
+            IEnumerable<TagInfo> filteredTags = _allTags;
+            
+            if (!string.IsNullOrEmpty(filterText))
+            {
+                filteredTags = _allTags.Where(t => 
+                    t.Name.Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
+                    (t.Description?.Contains(filterText, StringComparison.OrdinalIgnoreCase) ?? false));
+            }
+
+            var tagsList = filteredTags.ToList();
+            TagsDataGrid.ItemsSource = tagsList;
+            
+            // Update count label
+            if (TagCountLabel != null)
+            {
+                if (string.IsNullOrEmpty(filterText))
+                {
+                    TagCountLabel.Text = $"{_allTags.Count} tags";
+                }
+                else
+                {
+                    TagCountLabel.Text = $"Showing {tagsList.Count} of {_allTags.Count} tags";
+                }
+            }
+        }
+
+        private void TagFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            ApplyTagFilter();
+        }
+
+        private void ClearTagFilter_Click(object sender, RoutedEventArgs e)
+        {
+            TagFilterTextBox.Text = "";
+            ApplyTagFilter();
         }
 
         private void CreateTag_Click(object sender, RoutedEventArgs e)
@@ -343,37 +811,162 @@ namespace FileTagger
                 
                 if (result == MessageBoxResult.Yes)
                 {
-                    // Delete from all directory databases
-                    var activeDirectories = DatabaseManager.Instance.GetAllActiveDirectories();
-                    foreach (var directoryPath in activeDirectories)
+                    try
                     {
-                        try
-                        {
-                            using var dirDb = DatabaseManager.Instance.GetDirectoryDb(directoryPath);
-                            var localTag = dirDb.LocalTags.FirstOrDefault(t => t.Name == selectedTag.Name);
-                            if (localTag != null)
-                            {
-                                dirDb.LocalTags.Remove(localTag);
-                                dirDb.SaveChanges();
-                            }
-                        }
-                        catch
-                        {
-                            // Continue with other directories if one fails
-                        }
+                        // Delete tag from central database
+                        DatabaseManager.Instance.DeleteTag(selectedTag.Name);
+                        LoadTags();
+                        LoadTagFilter();
                     }
-                    
-                    // Resync all tags
-                    DatabaseManager.Instance.SynchronizeAllTags();
-                    LoadTags();
-                    LoadTagFilter();
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Error deleting tag: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
                 }
             }
         }
 
         private void RefreshTags_Click(object sender, RoutedEventArgs e)
         {
-            LoadTags();
+            try
+            {
+                // Resynchronize all tags from directory databases
+                // This will clean up tags with zero usage count
+                DatabaseManager.Instance.SynchronizeAllTags();
+                LoadTags();
+                ClearTagEdits();
+                MessageBox.Show("Tags refreshed and orphaned tags cleaned up successfully!", 
+                    "Refresh Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error refreshing tags: {ex.Message}", 
+                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void TagsDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            DeleteTagButton.IsEnabled = TagsDataGrid.SelectedItem != null;
+        }
+
+        private void TagsDataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
+        {
+            // Store the original tag name when editing starts
+            if (e.Row.Item is TagInfo tagInfo)
+            {
+                _currentEditingTagName = tagInfo.Name;
+            }
+        }
+
+        private void TagsDataGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            if (e.EditAction == DataGridEditAction.Cancel)
+            {
+                _currentEditingTagName = null;
+                return;
+            }
+
+            if (e.Row.Item is TagInfo tagInfo && !string.IsNullOrEmpty(_currentEditingTagName))
+            {
+                // Delay to allow the binding to update first
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    var originalName = _currentEditingTagName;
+                    var newName = tagInfo.Name?.Trim() ?? "";
+                    var newDescription = tagInfo.Description?.Trim() ?? "";
+
+                    // Check if anything actually changed
+                    if (_editedTags.TryGetValue(originalName, out var existing))
+                    {
+                        // Update existing edit
+                        _editedTags[originalName] = (newName, newDescription);
+                    }
+                    else
+                    {
+                        // Track new edit (store original values for comparison)
+                        _editedTags[originalName] = (newName, newDescription);
+                    }
+
+                    // Enable save button if there are any changes
+                    SaveTagChangesButton.IsEnabled = _editedTags.Count > 0;
+                    _currentEditingTagName = null;
+                }), System.Windows.Threading.DispatcherPriority.Background);
+            }
+        }
+
+        private void SaveTagChanges_Click(object sender, RoutedEventArgs e)
+        {
+            if (_editedTags.Count == 0)
+            {
+                MessageBox.Show("No changes to save.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            try
+            {
+                int renamedCount = 0;
+                int descriptionUpdatedCount = 0;
+                var errors = new List<string>();
+
+                foreach (var edit in _editedTags)
+                {
+                    var originalName = edit.Key;
+                    var (newName, newDescription) = edit.Value;
+
+                    // Check if name was changed
+                    if (!string.Equals(originalName, newName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (string.IsNullOrWhiteSpace(newName))
+                        {
+                            errors.Add($"Cannot rename '{originalName}' to empty name.");
+                            continue;
+                        }
+
+                        // Check for duplicate name
+                        var existingTags = DatabaseManager.Instance.GetAllAvailableTags();
+                        if (existingTags.Any(t => t.Name.Equals(newName, StringComparison.OrdinalIgnoreCase) && 
+                                                   !t.Name.Equals(originalName, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            errors.Add($"Cannot rename '{originalName}' to '{newName}' - tag already exists.");
+                            continue;
+                        }
+
+                        DatabaseManager.Instance.UpdateTagName(originalName, newName);
+                        renamedCount++;
+                    }
+
+                    // Update description
+                    DatabaseManager.Instance.UpdateTagDescription(newName.Length > 0 ? newName : originalName, newDescription);
+                    descriptionUpdatedCount++;
+                }
+
+                // Clear edits and reload
+                ClearTagEdits();
+                LoadTags();
+                LoadTagFilter();
+
+                var message = new List<string>();
+                if (renamedCount > 0)
+                    message.Add($"{renamedCount} tag(s) renamed");
+                if (descriptionUpdatedCount > 0)
+                    message.Add($"{descriptionUpdatedCount} description(s) updated");
+                if (errors.Count > 0)
+                    message.Add($"\n\nErrors:\n" + string.Join("\n", errors));
+
+                MessageBox.Show(string.Join(", ", message), "Save Complete", 
+                    MessageBoxButton.OK, errors.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error saving changes: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ClearTagEdits()
+        {
+            _editedTags.Clear();
+            SaveTagChangesButton.IsEnabled = false;
         }
 
         #endregion
@@ -665,21 +1258,28 @@ namespace FileTagger
 
         private void ManageFileTags_Click(object sender, RoutedEventArgs e)
         {
-            if (FilesDataGrid.SelectedItem is FileViewModel selectedFile)
+            if (FilesDataGrid.SelectedItems.Count == 0)
             {
-                var tagWindow = new TagManagementWindow(selectedFile.FilePath);
-                tagWindow.Owner = this;
-                if (tagWindow.ShowDialog() == true)
+                MessageBox.Show("Please select one or more files to manage tags.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Collect all selected file paths
+            var selectedFiles = FilesDataGrid.SelectedItems.Cast<FileViewModel>().ToList();
+            var filePaths = selectedFiles.Select(f => f.FilePath).ToList();
+
+            var tagWindow = new TagManagementWindow(filePaths);
+            tagWindow.Owner = this;
+            if (tagWindow.ShowDialog() == true)
+            {
+                // Refresh tags when tags are modified
+                DatabaseManager.Instance.SynchronizeAllTags();
+                LoadTags();
+                // Refresh current search results to show updated tags
+                var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
+                if (!string.IsNullOrEmpty(searchQuery))
                 {
-                    // Refresh tags when tags are modified
-                    DatabaseManager.Instance.SynchronizeAllTags();
-                    LoadTags();
-                    // Refresh current search results to show updated tags
-                    var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
-                    if (!string.IsNullOrEmpty(searchQuery))
-                    {
-                        LoadFiles(searchQuery);
-                    }
+                    LoadFiles(searchQuery);
                 }
             }
         }
@@ -881,7 +1481,7 @@ namespace FileTagger
 
         private bool IsTagDelimiter(char c)
         {
-            return c == ' ' || c == '&' || c == '|' || c == '(' || c == ')';
+            return c == ' ' || c == '&' || c == '|' || c == '(' || c == ')' || c == '\'' || c == '"';
         }
 
         private void TagSuggestion_Selected(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -897,10 +1497,13 @@ namespace FileTagger
             var currentText = TagSearchTextBox.Text;
             var caretPosition = TagSearchTextBox.CaretIndex;
             
+            // Quote the tag if it contains spaces
+            var quotedTag = TagSearchParser.QuoteTagIfNeeded(selectedTag);
+            
             if (TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray)
             {
                 // Replace placeholder text
-                TagSearchTextBox.Text = selectedTag;
+                TagSearchTextBox.Text = quotedTag;
                 TagSearchTextBox.Foreground = System.Windows.Media.Brushes.Black;
             }
             else
@@ -912,16 +1515,26 @@ namespace FileTagger
                 var currentTag = ExtractCurrentTag(currentText, caretPosition);
                 if (!string.IsNullOrEmpty(currentTag))
                 {
-                    // Find start position of current tag
+                    // Find start position of current tag (including any opening quote)
                     int start = caretPosition;
                     while (start > 0 && start - 1 < currentText.Length && !IsTagDelimiter(currentText[start - 1]))
                     {
                         start--;
                     }
+                    // Include opening quote if present
+                    if (start > 0 && (currentText[start - 1] == '\'' || currentText[start - 1] == '"'))
+                    {
+                        start--;
+                    }
                     
-                    // Find end position of current tag
+                    // Find end position of current tag (including any closing quote)
                     int end = caretPosition;
                     while (end < currentText.Length && !IsTagDelimiter(currentText[end]))
+                    {
+                        end++;
+                    }
+                    // Include closing quote if present
+                    if (end < currentText.Length && (currentText[end] == '\'' || currentText[end] == '"'))
                     {
                         end++;
                     }
@@ -934,15 +1547,15 @@ namespace FileTagger
                         start++; // Skip the minus when calculating replacement
                     }
                     
-                    // Replace the current tag
-                    var newText = currentText.Substring(0, start) + prefix + selectedTag + currentText.Substring(end);
+                    // Replace the current tag with the quoted version
+                    var newText = currentText.Substring(0, start) + prefix + quotedTag + currentText.Substring(end);
                     TagSearchTextBox.Text = newText;
-                    TagSearchTextBox.CaretIndex = start + prefix.Length + selectedTag.Length;
+                    TagSearchTextBox.CaretIndex = start + prefix.Length + quotedTag.Length;
                 }
                 else
                 {
                     // Just append the tag
-                    TagSearchTextBox.Text = currentText + " " + selectedTag;
+                    TagSearchTextBox.Text = currentText + " " + quotedTag;
                     TagSearchTextBox.CaretIndex = TagSearchTextBox.Text.Length;
                 }
             }
@@ -970,6 +1583,15 @@ namespace FileTagger
         #endregion
 
         #endregion
+    }
+
+    public class DirectoryViewModel
+    {
+        public string DirectoryPath { get; set; } = string.Empty;
+        public string DatabasePath { get; set; } = string.Empty;
+        public System.Windows.Media.Brush StatusColor { get; set; } = System.Windows.Media.Brushes.Gray;
+        public bool HasWarning { get; set; } = false;
+        public string WarningMessage { get; set; } = string.Empty;
     }
 
     public class FileViewModel

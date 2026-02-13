@@ -8,44 +8,93 @@ using FileTagger.Services;
 
 namespace FileTagger.Windows
 {
+    public class TagDisplayItem
+    {
+        public string TagName { get; set; }
+        public int FileCount { get; set; }
+        public int TotalFiles { get; set; }
+        
+        public override string ToString()
+        {
+            if (FileCount == TotalFiles && TotalFiles > 1)
+                return $"{TagName} (all {FileCount})";
+            else if (TotalFiles > 1)
+                return $"{TagName} ({FileCount}/{TotalFiles})";
+            else
+                return TagName;
+        }
+    }
+
     public partial class TagManagementWindow : Window
     {
-        private readonly string _filePath;
-        private readonly string _originalFilePath;
+        private readonly List<string> _filePaths;
+        private readonly List<string> _originalFilePaths;
 
-        public TagManagementWindow(string filePath)
+        public TagManagementWindow(List<string> filePaths)
         {
             InitializeComponent();
-            _originalFilePath = filePath;
-            _filePath = filePath;
+            _originalFilePaths = new List<string>(filePaths);
+            _filePaths = new List<string>();
             
-            // Check if this is a temp file and show appropriate info
-            if (TempResultsManager.Instance.IsInTempDirectory(filePath))
+            // Process each file path (handle temp files)
+            foreach (var filePath in filePaths)
             {
-                var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePath);
-                if (!string.IsNullOrEmpty(mappedPath))
+                if (TempResultsManager.Instance.IsInTempDirectory(filePath))
                 {
-                    _filePath = mappedPath; // Use original file path for all operations
-                    
-                    // Show temp file info
-                    TempFileInfoPanel.Visibility = System.Windows.Visibility.Visible;
-                    TempFilePathTextBlock.Text = filePath;
-                    OriginalFilePathTextBlock.Text = mappedPath;
-                    FilePathTextBlock.Text = mappedPath;
+                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePath);
+                    if (!string.IsNullOrEmpty(mappedPath))
+                    {
+                        _filePaths.Add(mappedPath);
+                    }
+                    else
+                    {
+                        _filePaths.Add(filePath);
+                    }
                 }
                 else
                 {
-                    FilePathTextBlock.Text = filePath;
+                    _filePaths.Add(filePath);
+                }
+            }
+            
+            // Update UI based on file count
+            if (_filePaths.Count == 1)
+            {
+                FileHeaderTextBlock.Text = "File:";
+                FilePathTextBlock.Text = _filePaths[0];
+                TempFileInfoPanel.Visibility = System.Windows.Visibility.Collapsed;
+                
+                // Check if single file is from temp directory
+                if (TempResultsManager.Instance.IsInTempDirectory(filePaths[0]))
+                {
+                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePaths[0]);
+                    if (!string.IsNullOrEmpty(mappedPath))
+                    {
+                        TempFileInfoPanel.Visibility = System.Windows.Visibility.Visible;
+                        TempFilePathTextBlock.Text = filePaths[0];
+                        OriginalFilePathTextBlock.Text = mappedPath;
+                        FilePathTextBlock.Text = mappedPath;
+                    }
                 }
             }
             else
             {
+                FileHeaderTextBlock.Text = $"Managing {_filePaths.Count} files:";
+                FilePathTextBlock.Text = string.Join("\n", _filePaths.Take(5));
+                if (_filePaths.Count > 5)
+                {
+                    FilePathTextBlock.Text += $"\n... and {_filePaths.Count - 5} more";
+                }
                 TempFileInfoPanel.Visibility = System.Windows.Visibility.Collapsed;
-                FilePathTextBlock.Text = filePath;
             }
             
             LoadCurrentTags();
             LoadAvailableTags();
+        }
+
+        // Convenience constructor for backward compatibility (single file)
+        public TagManagementWindow(string filePath) : this(new List<string> { filePath })
+        {
         }
 
         private void LoadFileRecord()
@@ -56,28 +105,76 @@ namespace FileTagger.Windows
 
         private void LoadCurrentTags()
         {
-            var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
-            var currentFile = allFiles.FirstOrDefault(f => f.FullPath == _filePath);
-            
-            if (currentFile != null)
+            if (_filePaths.Count == 0)
             {
-                CurrentTagsListBox.ItemsSource = currentFile.Tags;
+                CurrentTagsListBox.ItemsSource = new List<TagDisplayItem>();
+                return;
+            }
+
+            // Get tags for all files
+            var allFileTags = new List<List<string>>();
+            foreach (var filePath in _filePaths)
+            {
+                var tags = DatabaseManager.Instance.GetTagsForFile(filePath);
+                allFileTags.Add(tags);
+            }
+
+            if (_filePaths.Count == 1)
+            {
+                // Single file - show all tags
+                var displayItems = allFileTags[0]
+                    .OrderBy(t => t)
+                    .Select(t => new TagDisplayItem 
+                    { 
+                        TagName = t, 
+                        FileCount = 1, 
+                        TotalFiles = 1 
+                    })
+                    .ToList();
+                CurrentTagsListBox.ItemsSource = displayItems;
             }
             else
             {
-                CurrentTagsListBox.ItemsSource = new List<string>();
+                // Multiple files - show all tags from any file (union)
+                // Count how many files have each tag
+                var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var fileTags in allFileTags)
+                {
+                    foreach (var tag in fileTags)
+                    {
+                        if (!tagCounts.ContainsKey(tag))
+                            tagCounts[tag] = 0;
+                        tagCounts[tag]++;
+                    }
+                }
+
+                // Create display items with count indicators
+                var displayItems = tagCounts
+                    .OrderBy(kvp => kvp.Key)
+                    .Select(kvp => new TagDisplayItem
+                    {
+                        TagName = kvp.Key,
+                        FileCount = kvp.Value,
+                        TotalFiles = _filePaths.Count
+                    })
+                    .ToList();
+
+                CurrentTagsListBox.ItemsSource = displayItems;
             }
         }
 
         private void LoadAvailableTags()
         {
             var allTags = DatabaseManager.Instance.GetAllAvailableTags();
-            var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
-            var currentFile = allFiles.FirstOrDefault(f => f.FullPath == _filePath);
-            var currentTags = currentFile?.Tags ?? new List<string>();
+            
+            // Get current tags
+            var currentTags = (CurrentTagsListBox.ItemsSource as List<TagDisplayItem> ?? new List<TagDisplayItem>())
+                .Select(t => t.TagName)
+                .ToList();
 
+            // Show tags that are not already on the files
             var availableTags = allTags
-                .Where(t => !currentTags.Contains(t.Name))
+                .Where(t => !currentTags.Contains(t.Name, StringComparer.OrdinalIgnoreCase))
                 .Select(t => t.Name)
                 .OrderBy(t => t)
                 .ToList();
@@ -97,42 +194,18 @@ namespace FileTagger.Windows
 
         private void RemoveTag_Click(object sender, RoutedEventArgs e)
         {
-            if (CurrentTagsListBox.SelectedItem is string selectedTagName)
+            if (CurrentTagsListBox.SelectedItem is TagDisplayItem selectedTag)
             {
                 try
                 {
-                    // Get the appropriate watched directory for this file
-                    var watchedDirectory = DatabaseManager.Instance.GetWatchedDirectoryForFile(_filePath);
-                    if (string.IsNullOrEmpty(watchedDirectory))
+                    // Remove tag from all selected files (only removes from files that have it)
+                    foreach (var filePath in _filePaths)
                     {
-                        MessageBox.Show("This file is not in a watched directory. Please add the directory to File Tagger settings first.", 
-                            "File Tagger", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        return;
+                        DatabaseManager.Instance.RemoveTagFromFile(filePath, selectedTag.TagName);
                     }
-
-                    var relativePath = Path.GetRelativePath(watchedDirectory, _filePath);
-
-                    using var dirDb = DatabaseManager.Instance.GetDirectoryDb(watchedDirectory);
-                    var fileRecord = dirDb.LocalFileRecords.FirstOrDefault(f => f.RelativePath == relativePath);
-                    if (fileRecord != null)
-                    {
-                        var tag = dirDb.LocalTags.FirstOrDefault(t => t.Name == selectedTagName);
-                        if (tag != null)
-                        {
-                            var fileTag = dirDb.LocalFileTags.FirstOrDefault(ft => ft.LocalFileRecordId == fileRecord.Id && ft.LocalTagId == tag.Id);
-                            if (fileTag != null)
-                            {
-                                dirDb.LocalFileTags.Remove(fileTag);
-                                dirDb.SaveChanges();
-
-                                // Sync changes to main database
-                                DatabaseManager.Instance.SynchronizeDirectoryTags(watchedDirectory);
-                                
-                                LoadCurrentTags();
-                                LoadAvailableTags();
-                            }
-                        }
-                    }
+                    
+                    LoadCurrentTags();
+                    LoadAvailableTags();
                 }
                 catch (Exception ex)
                 {
@@ -152,7 +225,11 @@ namespace FileTagger.Windows
 
             try
             {
-                DatabaseManager.Instance.AddTagToFile(_filePath, tagName);
+                // Add tag to all selected files
+                foreach (var filePath in _filePaths)
+                {
+                    DatabaseManager.Instance.AddTagToFile(filePath, tagName);
+                }
                 
                 NewTagTextBox.Text = "Create new tag";
                 NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
@@ -176,18 +253,25 @@ namespace FileTagger.Windows
 
             try
             {
-                var directoryPath = Path.GetDirectoryName(_filePath);
-                if (!string.IsNullOrEmpty(directoryPath))
+                // Get unique directories from all files
+                var directories = _filePaths
+                    .Select(f => Path.GetDirectoryName(f))
+                    .Where(d => !string.IsNullOrEmpty(d))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                // Create tag in all applicable directories
+                foreach (var directory in directories)
                 {
-                    DatabaseManager.Instance.CreateStandaloneTag(directoryPath, tagName);
-                    
-                    MessageBox.Show($"Tag '{tagName}' created successfully!", "Tag Created", 
-                        MessageBoxButton.OK, MessageBoxImage.Information);
-                    
-                    NewTagTextBox.Text = "Create new tag";
-                    NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
-                    LoadAvailableTags();
+                    DatabaseManager.Instance.CreateStandaloneTag(directory, tagName);
                 }
+                
+                MessageBox.Show($"Tag '{tagName}' created successfully!", "Tag Created", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                NewTagTextBox.Text = "Create new tag";
+                NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+                LoadAvailableTags();
             }
             catch (Exception ex)
             {
@@ -205,9 +289,13 @@ namespace FileTagger.Windows
 
             try
             {
+                // Add each selected tag to all files
                 foreach (string tagName in AvailableTagsListBox.SelectedItems)
                 {
-                    DatabaseManager.Instance.AddTagToFile(_filePath, tagName);
+                    foreach (var filePath in _filePaths)
+                    {
+                        DatabaseManager.Instance.AddTagToFile(filePath, tagName);
+                    }
                 }
                 
                 LoadCurrentTags();
@@ -222,10 +310,15 @@ namespace FileTagger.Windows
         private void Save_Click(object sender, RoutedEventArgs e)
         {
             // Ensure tags are synchronized when closing
-            var directoryPath = Path.GetDirectoryName(_filePath);
-            if (!string.IsNullOrEmpty(directoryPath))
+            var directories = _filePaths
+                .Select(f => Path.GetDirectoryName(f))
+                .Where(d => !string.IsNullOrEmpty(d))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var directory in directories)
             {
-                DatabaseManager.Instance.SynchronizeDirectoryTags(directoryPath);
+                DatabaseManager.Instance.SynchronizeDirectoryTags(directory);
             }
             
             DialogResult = true;
@@ -258,6 +351,104 @@ namespace FileTagger.Windows
             {
                 textBox.Foreground = System.Windows.Media.Brushes.Gray;
                 textBox.Text = "Create new tag";
+            }
+        }
+
+        #endregion
+
+        #region Tag Autocomplete
+
+        private void NewTagTextBox_KeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                CreateAndAddTag_Click(sender, e);
+                return;
+            }
+
+            if (e.Key == System.Windows.Input.Key.Escape)
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
+            if (e.Key == System.Windows.Input.Key.Down && TagSuggestionsPopup.IsOpen)
+            {
+                if (TagSuggestionsListBox.Items.Count > 0)
+                {
+                    TagSuggestionsListBox.SelectedIndex = 0;
+                    TagSuggestionsListBox.Focus();
+                }
+                return;
+            }
+
+            var searchText = NewTagTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : NewTagTextBox.Text?.Trim();
+            
+            if (string.IsNullOrEmpty(searchText))
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
+            ShowTagSuggestions(searchText);
+        }
+
+        private void ShowTagSuggestions(string searchText)
+        {
+            if (string.IsNullOrWhiteSpace(searchText))
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
+            var allTags = DatabaseManager.Instance.GetAllAvailableTags();
+            var matchingTags = allTags
+                .Where(t => t.Name.StartsWith(searchText, StringComparison.OrdinalIgnoreCase))
+                .Select(t => t.Name)
+                .Take(10)
+                .ToList();
+
+            if (matchingTags.Any())
+            {
+                TagSuggestionsListBox.ItemsSource = matchingTags;
+                TagSuggestionsPopup.IsOpen = true;
+            }
+            else
+            {
+                TagSuggestionsPopup.IsOpen = false;
+            }
+        }
+
+        private void TagSuggestion_Selected(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (TagSuggestionsListBox.SelectedItem is string selectedTag)
+            {
+                NewTagTextBox.Text = selectedTag;
+                NewTagTextBox.Foreground = System.Windows.Media.Brushes.Black;
+                TagSuggestionsPopup.IsOpen = false;
+                NewTagTextBox.Focus();
+                NewTagTextBox.CaretIndex = NewTagTextBox.Text.Length;
+            }
+        }
+
+        private void TagSuggestionsListBox_KeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+            {
+                if (TagSuggestionsListBox.SelectedItem is string selectedTag)
+                {
+                    NewTagTextBox.Text = selectedTag;
+                    NewTagTextBox.Foreground = System.Windows.Media.Brushes.Black;
+                    TagSuggestionsPopup.IsOpen = false;
+                    NewTagTextBox.Focus();
+                    NewTagTextBox.CaretIndex = NewTagTextBox.Text.Length;
+                }
+            }
+            else if (e.Key == System.Windows.Input.Key.Escape)
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                NewTagTextBox.Focus();
             }
         }
 

@@ -6,6 +6,9 @@
         WindowStartupLocation="CenterScreen"
         StateChanged="Window_StateChanged"
         Closing="Window_Closing">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+    </Window.Resources>
     <Grid>
         <!-- System Tray Icon -->
         <tb:TaskbarIcon x:Name="TrayIcon"
@@ -27,31 +30,67 @@
                 <Grid Margin="10">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Text="Watched Directories" FontSize="16" FontWeight="Bold" Margin="0,0,0,10"/>
+                    
+                    <StackPanel Grid.Row="1" Orientation="Vertical" Margin="0,0,0,10">
+                        <TextBlock x:Name="CurrentDatabaseLabel" Text="Database for selected directory:" 
+                                   FontSize="12" Foreground="DarkGray" Margin="0,0,0,5"/>
+                        <TextBlock x:Name="CurrentDatabasePath" Text="Select a directory to view its database path" 
+                                   FontSize="11" Foreground="Blue" FontStyle="Italic" TextWrapping="Wrap"/>
+                    </StackPanel>
 
-                    <Grid Grid.Row="1">
+                    <Grid Grid.Row="2">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
                         <ListBox x:Name="DirectoriesListBox" Grid.Column="0" 
-                                 SelectionChanged="DirectoriesListBox_SelectionChanged"/>
+                                 SelectionChanged="DirectoriesListBox_SelectionChanged"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Vertical" Margin="5">
+                                        <TextBlock Text="{Binding DirectoryPath}" FontWeight="Bold" FontSize="12"/>
+                                        <TextBlock Text="{Binding DatabasePath}" FontSize="10" Foreground="{Binding StatusColor}" Margin="10,2,0,0"/>
+                                        <TextBlock Text="{Binding WarningMessage}" FontSize="10" Foreground="Orange" Margin="10,2,0,0" 
+                                                   Visibility="{Binding HasWarning, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
 
-                        <StackPanel Grid.Column="1" Width="150">
+                        <StackPanel Grid.Column="1" Width="180">
                             <Button x:Name="AddDirectoryButton" Content="Add Directory" Click="AddDirectory_Click"/>
                             <Button x:Name="RemoveDirectoryButton" Content="Remove Directory" Click="RemoveDirectory_Click" IsEnabled="False"/>
                             <Button x:Name="RefreshButton" Content="Refresh" Click="Refresh_Click" Margin="5,20,5,5"/>
                             <Button x:Name="ScanForExistingButton" Content="Scan for Existing Databases" Click="ScanForExisting_Click" Margin="5,5,5,5" 
                                     ToolTip="Automatically discover and import existing .filetagger directories"/>
+                            
+                            <!-- Sync Operations -->
+                            <TextBlock Text="Folder Sync:" FontWeight="Bold" Margin="5,15,5,5" Foreground="DarkBlue"/>
+                            <Button x:Name="PullFromFolderButton" Content="📥 Pull from Folder" Click="PullFromFolder_Click" Margin="5,2,5,2" 
+                                    ToolTip="Import tags from folder database into central database"/>
+                            <Button x:Name="PushToFolderButton" Content="📤 Push to Folder" Click="PushToFolder_Click" Margin="5,2,5,2" 
+                                    ToolTip="Export tags to folder database for backup/sync"/>
+                            <Button x:Name="CleanupFolderButton" Content="🧹 Cleanup Folder" Click="CleanupFolder_Click" Margin="5,2,5,2" 
+                                    ToolTip="Pull all data, delete folder databases, push clean copy"/>
+                            
+                            <!-- Maintenance -->
+                            <TextBlock Text="Maintenance:" FontWeight="Bold" Margin="5,15,5,5" Foreground="DarkBlue"/>
+                            <Button x:Name="MergeDuplicatesButton" Content="Merge Duplicate Databases" Click="MergeDuplicates_Click" Margin="5,2,5,2" 
+                                    ToolTip="Find and merge .filetagger (1), .filetagger (2) etc. into main database"/>
+                            <Button x:Name="VerifyFilesButton" Content="Verify Tagged Files" Click="VerifyFiles_Click" Margin="5,2,5,2" 
+                                    ToolTip="Check that all tagged files exist and update tag counts"/>
                         </StackPanel>
                     </Grid>
 
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="RefreshContextMenusButton" Content="Refresh Context Menus" Click="RefreshContextMenus_Click" Margin="0,0,10,0"/>
                         <Button x:Name="DiagnoseContextMenusButton" Content="Diagnose Context Menus" Click="DiagnoseContextMenus_Click" Margin="0,0,10,0" 
                                 ToolTip="Show diagnostic information about context menu registration"/>
@@ -66,6 +105,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
@@ -78,20 +118,35 @@
                         <Button x:Name="CreateTagButton" Content="Create Tag" Click="CreateTag_Click"/>
                     </StackPanel>
 
-                    <DataGrid Grid.Row="2" x:Name="TagsDataGrid" AutoGenerateColumns="False" 
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
+                        <TextBlock Text="🔍 Filter:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <TextBox x:Name="TagFilterTextBox" Width="250" 
+                                 TextChanged="TagFilterTextBox_TextChanged"
+                                 ToolTip="Type to filter tags by name or description"/>
+                        <Button Content="Clear" Click="ClearTagFilter_Click" Margin="5,0,0,0" Padding="10,2"/>
+                        <TextBlock x:Name="TagCountLabel" VerticalAlignment="Center" Margin="15,0,0,0" Foreground="Gray"/>
+                    </StackPanel>
+
+                    <DataGrid Grid.Row="3" x:Name="TagsDataGrid" AutoGenerateColumns="False" 
                               CanUserAddRows="False" CanUserDeleteRows="False" 
-                              SelectionMode="Single" Margin="0,10,0,10">
+                              SelectionMode="Single" Margin="0,10,0,10"
+                              BeginningEdit="TagsDataGrid_BeginningEdit"
+                              CellEditEnding="TagsDataGrid_CellEditEnding"
+                              SelectionChanged="TagsDataGrid_SelectionChanged">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200"/>
-                            <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="300"/>
-                            <DataGridTextColumn Header="Usage Count" Binding="{Binding TotalUsageCount}" Width="100"/>
-                            <DataGridTextColumn Header="Source Directories" Binding="{Binding SourceDirectoriesString}" Width="300"/>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name, Mode=TwoWay}" Width="200"/>
+                            <DataGridTextColumn Header="Description" Binding="{Binding Description, Mode=TwoWay}" Width="300"/>
+                            <DataGridTextColumn Header="Usage Count" Binding="{Binding TotalUsageCount}" Width="100" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Source Directories" Binding="{Binding SourceDirectoriesString}" Width="300" IsReadOnly="True"/>
                         </DataGrid.Columns>
                     </DataGrid>
 
-                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="SaveTagChangesButton" Content="Save Changes" Click="SaveTagChanges_Click" 
+                                IsEnabled="False" Margin="0,0,10,0" ToolTip="Save tag name and description changes"/>
                         <Button x:Name="DeleteTagButton" Content="Delete Selected Tag" Click="DeleteTag_Click" IsEnabled="False"/>
-                        <Button x:Name="RefreshTagsButton" Content="Refresh" Click="RefreshTags_Click"/>
+                        <Button x:Name="RefreshTagsButton" Content="Refresh Tags" Click="RefreshTags_Click" 
+                                ToolTip="Resynchronize tags and remove orphaned tags with zero file associations"/>
                     </StackPanel>
                 </Grid>
             </TabItem>
@@ -140,7 +195,8 @@
 
                     <DataGrid Grid.Row="2" x:Name="FilesDataGrid" AutoGenerateColumns="False" 
                               CanUserAddRows="False" CanUserDeleteRows="False" 
-                              SelectionMode="Single" Margin="0,10,0,0">
+                              IsReadOnly="True"
+                              SelectionMode="Extended" Margin="0,10,0,0">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="File Name" Binding="{Binding FileName}" Width="250"/>
                             <DataGridTextColumn Header="File Path" Binding="{Binding FilePath}" Width="400"/>

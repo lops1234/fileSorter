@@ -7,8 +7,8 @@ namespace FileTagger.Services
 {
     /// <summary>
     /// Parses and evaluates complex tag search queries
-    /// Supports: AND (&), OR (|), grouping with (), exclusion with -, and spaces for AND
-    /// Examples: "tag1 tag2", "tag1 & tag2", "tag1 | tag2", "(tag1 | tag2) & tag3", "-excluded tag1"
+    /// Supports: AND (&), OR (|), grouping with (), exclusion with -, spaces for AND, and quoted tags
+    /// Examples: "tag1 tag2", "tag1 & tag2", "tag1 | tag2", "(tag1 | tag2) & tag3", "-excluded tag1", "'tag with spaces'"
     /// </summary>
     public class TagSearchParser
     {
@@ -88,30 +88,21 @@ namespace FileTagger.Services
 
         private static string NormalizeQuery(string query)
         {
-            // Replace spaces with & (AND) operator, but preserve spaces within parentheses and around operators
-            var normalized = query;
-            
-            // First, protect existing operators and parentheses
-            normalized = Regex.Replace(normalized, @"\s*&\s*", " & ");
-            normalized = Regex.Replace(normalized, @"\s*\|\s*", " | ");
-            normalized = Regex.Replace(normalized, @"\s*\(\s*", " ( ");
-            normalized = Regex.Replace(normalized, @"\s*\)\s*", " ) ");
-            
-            // Split by spaces and rejoin with & where appropriate
-            var parts = normalized.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            // Tokenize first to properly handle quoted strings
+            var tokens = TokenizeQuery(query);
             var result = new List<string>();
             
-            for (int i = 0; i < parts.Length; i++)
+            for (int i = 0; i < tokens.Count; i++)
             {
-                var part = parts[i];
-                result.Add(part);
+                var token = tokens[i];
+                result.Add(token);
                 
                 // Add & between tags (but not after operators or before closing parentheses)
-                if (i < parts.Length - 1)
+                if (i < tokens.Count - 1)
                 {
-                    var nextPart = parts[i + 1];
-                    if (!IsOperator(part) && !IsOperator(nextPart) && 
-                        part != "(" && nextPart != ")" && part != ")" && nextPart != "(")
+                    var nextToken = tokens[i + 1];
+                    if (!IsOperator(token) && !IsOperator(nextToken) && 
+                        token != "(" && nextToken != ")" && token != ")" && nextToken != "(")
                     {
                         result.Add("&");
                     }
@@ -126,9 +117,97 @@ namespace FileTagger.Services
             return token == "&" || token == "|" || token == "(" || token == ")";
         }
 
+        /// <summary>
+        /// Tokenizes a query, respecting quoted strings as single tokens
+        /// Supports both single quotes ('tag with spaces') and double quotes ("tag with spaces")
+        /// Quoted tokens are preserved WITH their quotes to maintain identity during re-tokenization
+        /// </summary>
         private static List<string> TokenizeQuery(string query)
         {
-            return query.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).ToList();
+            var tokens = new List<string>();
+            var currentToken = new System.Text.StringBuilder();
+            char? inQuote = null;
+            
+            for (int i = 0; i < query.Length; i++)
+            {
+                char c = query[i];
+                
+                // Handle quote characters
+                if ((c == '\'' || c == '"') && inQuote == null)
+                {
+                    // Starting a quoted section - include the opening quote
+                    inQuote = c;
+                    currentToken.Append(c);
+                    continue;
+                }
+                else if (c == inQuote)
+                {
+                    // Ending a quoted section - include the closing quote
+                    currentToken.Append(c);
+                    tokens.Add(currentToken.ToString());
+                    currentToken.Clear();
+                    inQuote = null;
+                    continue;
+                }
+                
+                // If inside quotes, add character to current token
+                if (inQuote != null)
+                {
+                    currentToken.Append(c);
+                    continue;
+                }
+                
+                // Handle spaces (token separators) outside quotes
+                if (c == ' ')
+                {
+                    if (currentToken.Length > 0)
+                    {
+                        tokens.Add(currentToken.ToString());
+                        currentToken.Clear();
+                    }
+                    continue;
+                }
+                
+                // Handle operators as separate tokens
+                if (c == '&' || c == '|' || c == '(' || c == ')')
+                {
+                    if (currentToken.Length > 0)
+                    {
+                        tokens.Add(currentToken.ToString());
+                        currentToken.Clear();
+                    }
+                    tokens.Add(c.ToString());
+                    continue;
+                }
+                
+                // Regular character - add to current token
+                currentToken.Append(c);
+            }
+            
+            // Add any remaining token
+            if (currentToken.Length > 0)
+            {
+                tokens.Add(currentToken.ToString());
+            }
+            
+            return tokens;
+        }
+
+        /// <summary>
+        /// Strips quotes from a tag name if present
+        /// </summary>
+        private static string StripQuotes(string tag)
+        {
+            if (string.IsNullOrEmpty(tag) || tag.Length < 2)
+                return tag;
+            
+            if ((tag.StartsWith("'") && tag.EndsWith("'")) ||
+                (tag.StartsWith("\"") && tag.EndsWith("\"")))
+            {
+                return tag.Substring(1, tag.Length - 2);
+            }
+            
+            return tag;
         }
 
         private static bool AreParenthesesBalanced(List<string> tokens)
@@ -151,7 +230,7 @@ namespace FileTagger.Services
 
                 if (token.StartsWith("-"))
                 {
-                    var excludedTag = token.Substring(1);
+                    var excludedTag = StripQuotes(token.Substring(1));
                     if (!string.IsNullOrWhiteSpace(excludedTag))
                     {
                         result.ExcludedTags.Add(excludedTag);
@@ -159,9 +238,10 @@ namespace FileTagger.Services
                 }
                 else
                 {
-                    if (!string.IsNullOrWhiteSpace(token))
+                    var tagName = StripQuotes(token);
+                    if (!string.IsNullOrWhiteSpace(tagName))
                     {
-                        result.RequiredTags.Add(token);
+                        result.RequiredTags.Add(tagName);
                     }
                 }
             }
@@ -231,14 +311,15 @@ namespace FileTagger.Services
             }
             else if (token.StartsWith("-"))
             {
-                // Exclusion - should not be present
-                var excludedTag = token.Substring(1);
+                // Exclusion - should not be present (strip quotes from tag name)
+                var excludedTag = StripQuotes(token.Substring(1));
                 return !fileTags.Any(tag => string.Equals(tag, excludedTag, StringComparison.OrdinalIgnoreCase));
             }
             else
             {
-                // Regular tag - should be present
-                return fileTags.Any(tag => string.Equals(tag, token, StringComparison.OrdinalIgnoreCase));
+                // Regular tag - should be present (strip quotes from tag name)
+                var tagName = StripQuotes(token);
+                return fileTags.Any(tag => string.Equals(tag, tagName, StringComparison.OrdinalIgnoreCase));
             }
         }
 
@@ -252,7 +333,25 @@ namespace FileTagger.Services
 • | = OR: 'tag1 | tag2'
 • () = Grouping: '(tag1 | tag2) & tag3'
 • - = Exclude: '-unwanted tag1'
-• Examples: 'photo work', 'image | video', '(urgent | important) & -archived'";
+• Quotes for tags with spaces: 'AI generated' or ""my tag""
+• Examples: 'photo work', 'image | video', '(urgent | important) & -archived', 'AI generated' & photo";
+        }
+
+        /// <summary>
+        /// Wraps a tag in single quotes if it contains spaces
+        /// </summary>
+        public static string QuoteTagIfNeeded(string tagName)
+        {
+            if (string.IsNullOrEmpty(tagName))
+                return tagName;
+            
+            // If the tag contains spaces, wrap it in single quotes
+            if (tagName.Contains(' '))
+            {
+                return $"'{tagName}'";
+            }
+            
+            return tagName;
         }
     }
 }

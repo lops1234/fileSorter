@@ -52,7 +52,7 @@
         <!-- Files List -->
         <DataGrid Grid.Row="3" x:Name="FilesDataGrid" AutoGenerateColumns="False" 
                   CanUserAddRows="False" CanUserDeleteRows="False" 
-                  SelectionMode="Single" GridLinesVisibility="Horizontal">
+                  SelectionMode="Extended" GridLinesVisibility="Horizontal">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="File Name" Binding="{Binding FileName}" Width="250"/>
                 <DataGridTextColumn Header="Extension" Binding="{Binding Extension}" Width="80"/>

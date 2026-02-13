@@ -3,12 +3,15 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using FileTagger.Data;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace FileTagger.Services
 {
     /// <summary>
-    /// Manages distributed database operations across main DB and directory-specific DBs
+    /// Manages the central database for all file tagging operations.
+    /// Uses a single local database as the authoritative source of truth.
+    /// Provides Pull/Push/Cleanup operations for syncing with folder databases.
     /// </summary>
     public class DatabaseManager
     {
@@ -34,118 +37,1194 @@ namespace FileTagger.Services
         private DatabaseManager() { }
 
         /// <summary>
-        /// Initialize all databases and perform initial synchronization
+        /// Get the path to the central database
+        /// </summary>
+        public string GetCentralDatabasePath() => CentralDbContext.GetDatabasePath();
+
+        /// <summary>
+        /// Initialize the central database and perform any necessary migrations
         /// </summary>
         public void Initialize()
         {
-            // Ensure main database exists
-            using (var mainDb = new MainDbContext())
+            // Ensure central database exists
+            using (var centralDb = new CentralDbContext())
             {
-                mainDb.Database.EnsureCreated();
+                centralDb.Database.EnsureCreated();
             }
 
-            // Discover and add existing .filetagger directories
-            DiscoverExistingFileTaggerDirectories();
-
-            // Sync tags from all directory databases
-            SynchronizeAllTags();
+            // Check if this is first run with old data - migrate if needed
+            MigrateFromOldDatabaseStructure();
         }
 
         /// <summary>
-        /// Discover existing .filetagger directories and add them to watched directories if not already present
+        /// Migrate data from old database structure (main.db + per-folder DBs) to new central database
         /// </summary>
-        private void DiscoverExistingFileTaggerDirectories()
+        private void MigrateFromOldDatabaseStructure()
         {
+            var oldMainDbPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "FileTagger", "main.db");
+
+            if (!File.Exists(oldMainDbPath))
+                return; // No old database to migrate
+
             try
             {
-                using var mainDb = new MainDbContext();
-                var existingWatchedDirs = mainDb.WatchedDirectories
-                    .Select(d => d.DirectoryPath)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                using var centralDb = new CentralDbContext();
+                
+                // Check if we already have data in central DB
+                if (centralDb.Directories.Any())
+                    return; // Already migrated
 
-                // Search common drive roots for .filetagger directories
-                var searchRoots = GetSearchRoots();
-                var discoveredDirectories = new List<string>();
+                // Migrate from old structure
+                using var oldMainDb = new MainDbContext();
+                var oldDirectories = oldMainDb.WatchedDirectories.Where(d => d.IsActive).ToList();
 
-                foreach (var searchRoot in searchRoots)
+                foreach (var oldDir in oldDirectories)
                 {
-                    try
+                    // Add directory to central DB
+                    var centralDir = new CentralDirectory
                     {
-                        if (!Directory.Exists(searchRoot))
-                            continue;
+                        DirectoryPath = oldDir.DirectoryPath,
+                        IsActive = oldDir.IsActive,
+                        CreatedAt = oldDir.CreatedAt,
+                        LastSyncAt = oldDir.LastSyncAt
+                    };
+                    centralDb.Directories.Add(centralDir);
+                    centralDb.SaveChanges();
 
-                        // Search for .filetagger directories recursively
-                        var fileTaggerDirs = Directory.GetDirectories(searchRoot, ".filetagger", SearchOption.AllDirectories);
-                        
-                        foreach (var fileTaggerDir in fileTaggerDirs)
-                        {
-                            // Get the parent directory (the actual directory we want to watch)
-                            var parentDir = Path.GetDirectoryName(fileTaggerDir);
-                            if (string.IsNullOrEmpty(parentDir) || existingWatchedDirs.Contains(parentDir))
-                                continue;
-
-                            // Check if there's a valid database file
-                            var dbFile = Path.Combine(fileTaggerDir, "tags.db");
-                            if (File.Exists(dbFile))
-                            {
-                                discoveredDirectories.Add(parentDir);
-                            }
+                    // Pull data from folder database if it exists
+                    PullFromFolderInternal(centralDb, centralDir);
                         }
                     }
                     catch
                     {
-                        // Skip search roots that can't be accessed
-                        continue;
-                    }
-                }
+                // If migration fails, continue with empty central database
+            }
+        }
 
-                // Add discovered directories to watched list
-                foreach (var directoryPath in discoveredDirectories)
-                {
-                    try
-                    {
-                        var watchedDir = new WatchedDirectory
+        #region Directory Management
+
+        /// <summary>
+        /// Add a new watched directory
+        /// </summary>
+        public void AddWatchedDirectory(string directoryPath)
+        {
+            using var centralDb = new CentralDbContext();
+
+            var existingDir = centralDb.Directories.FirstOrDefault(d => 
+                d.DirectoryPath.ToLower() == directoryPath.ToLower());
+
+            if (existingDir != null)
+            {
+                existingDir.IsActive = true;
+                existingDir.LastSyncAt = DateTime.UtcNow;
+            }
+            else
+            {
+                var newDir = new CentralDirectory
                         {
                             DirectoryPath = directoryPath,
                             IsActive = true,
                             LastSyncAt = DateTime.UtcNow
                         };
-                        mainDb.WatchedDirectories.Add(watchedDir);
-                    }
-                    catch
-                    {
-                        // Skip directories that can't be added
-                        continue;
-                    }
-                }
+                centralDb.Directories.Add(newDir);
+                centralDb.SaveChanges();
 
-                if (discoveredDirectories.Any())
-                {
-                    mainDb.SaveChanges();
-                }
+                // Pull any existing data from folder database
+                var dir = centralDb.Directories.First(d => d.DirectoryPath.ToLower() == directoryPath.ToLower());
+                PullFromFolderInternal(centralDb, dir);
             }
-            catch
+
+            centralDb.SaveChanges();
+        }
+
+        /// <summary>
+        /// Remove a watched directory (deactivates it)
+        /// </summary>
+        public void RemoveWatchedDirectory(string directoryPath)
+        {
+            using var centralDb = new CentralDbContext();
+
+            var directory = centralDb.Directories.FirstOrDefault(d => 
+                d.DirectoryPath.ToLower() == directoryPath.ToLower());
+
+            if (directory != null)
             {
-                // If discovery fails, continue with normal initialization
+                directory.IsActive = false;
+                centralDb.SaveChanges();
             }
         }
 
         /// <summary>
-        /// Get search roots for discovering existing .filetagger directories
+        /// Get all active watched directories
         /// </summary>
+        public List<string> GetAllActiveDirectories()
+        {
+            using var centralDb = new CentralDbContext();
+            return centralDb.Directories
+                .Where(d => d.IsActive)
+                .Select(d => d.DirectoryPath)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Get the watched directory that contains a file
+        /// Returns the most specific (deepest) watched directory
+        /// </summary>
+        public string GetWatchedDirectoryForFile(string filePath)
+        {
+            var watchedDirs = GetAllActiveDirectories();
+            var fileDir = Path.GetDirectoryName(filePath) ?? "";
+
+            return watchedDirs
+                .Where(wd => fileDir.StartsWith(wd, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(wd => wd.Length)
+                .FirstOrDefault();
+        }
+
+        /// <summary>
+        /// Get all applicable directories for a file (from most specific to least)
+        /// </summary>
+        public List<string> GetApplicableDirectoriesForFile(string filePath)
+        {
+            var watchedDirs = GetAllActiveDirectories();
+            var fileDir = Path.GetDirectoryName(filePath) ?? "";
+
+            return watchedDirs
+                .Where(wd => fileDir.StartsWith(wd, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(wd => wd.Length)
+                .ToList();
+        }
+
+        #endregion
+
+        #region Pull/Push/Cleanup Operations
+
+        /// <summary>
+        /// Pull all data from folder databases into the central database
+        /// </summary>
+        public PullResult PullFromFolder(string directoryPath)
+        {
+            var result = new PullResult { DirectoryPath = directoryPath };
+
+            try
+            {
+                using var centralDb = new CentralDbContext();
+
+                var centralDir = centralDb.Directories.FirstOrDefault(d =>
+                    d.DirectoryPath.ToLower() == directoryPath.ToLower());
+
+                if (centralDir == null)
+                {
+                    result.Errors.Add($"Directory not found in watched directories: {directoryPath}");
+                    return result;
+                }
+
+                // Find all .filetagger directories (including duplicates)
+                var fileTaggerDirs = FindAllFileTaggerDirectories(directoryPath);
+                result.DatabasesFound = fileTaggerDirs.Count;
+
+                foreach (var ftDir in fileTaggerDirs)
+                {
+                    try
+                    {
+                        var dbPath = Path.Combine(ftDir, "tags.db");
+                        if (File.Exists(dbPath))
+                        {
+                            var pullStats = ImportFromFolderDatabase(centralDb, centralDir, dbPath);
+                            result.TagsImported += pullStats.TagsImported;
+                            result.FilesImported += pullStats.FilesImported;
+                            result.AssociationsImported += pullStats.AssociationsImported;
+                            result.DatabasesPulled++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        result.Errors.Add($"Error pulling from {ftDir}: {ex.Message}");
+                    }
+                }
+
+                centralDir.LastSyncAt = DateTime.UtcNow;
+                centralDb.SaveChanges();
+                result.Success = result.Errors.Count == 0;
+            }
+            catch (Exception ex)
+            {
+                result.Errors.Add($"Pull failed: {ex.Message}");
+            }
+            finally
+            {
+                // Release all connections after pull to allow subsequent delete operations
+                ReleaseAllDatabaseConnections();
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Push data from central database to a folder database
+        /// </summary>
+        public PushResult PushToFolder(string directoryPath)
+        {
+            var result = new PushResult { DirectoryPath = directoryPath };
+
+            try
+            {
+                using var centralDb = new CentralDbContext();
+
+                var centralDir = centralDb.Directories
+                    .Include(d => d.Tags)
+                    .Include(d => d.FileRecords)
+                        .ThenInclude(f => f.FileTags)
+                    .FirstOrDefault(d => d.DirectoryPath.ToLower() == directoryPath.ToLower());
+
+                if (centralDir == null)
+                {
+                    result.Errors.Add($"Directory not found in watched directories: {directoryPath}");
+                    return result;
+                }
+
+                // Create .filetagger directory if needed
+                var fileTaggerDir = Path.Combine(directoryPath, ".filetagger");
+                if (!Directory.Exists(fileTaggerDir))
+                {
+                    Directory.CreateDirectory(fileTaggerDir);
+                }
+
+                // Create/update the folder database
+                using var folderDb = new DirectoryDbContext(directoryPath);
+                folderDb.Database.EnsureCreated();
+
+                // Export tags
+                var existingTags = folderDb.LocalTags.ToList();
+                var tagMapping = new Dictionary<int, int>(); // central ID -> local ID
+
+                foreach (var centralTag in centralDir.Tags)
+                {
+                    var localTag = existingTags.FirstOrDefault(t =>
+                        string.Equals(t.Name, centralTag.Name, StringComparison.OrdinalIgnoreCase));
+
+                    if (localTag == null)
+                    {
+                        localTag = new LocalTag
+                        {
+                            Name = centralTag.Name,
+                            Description = centralTag.Description,
+                            CreatedAt = centralTag.CreatedAt,
+                            LastUsedAt = centralTag.LastUsedAt
+                        };
+                        folderDb.LocalTags.Add(localTag);
+                        folderDb.SaveChanges();
+                        existingTags.Add(localTag);
+                        result.TagsExported++;
+                    }
+                    else
+                    {
+                        // Update if central is newer
+                        if (centralTag.LastUsedAt > localTag.LastUsedAt)
+                        {
+                            localTag.LastUsedAt = centralTag.LastUsedAt;
+                            localTag.Description = centralTag.Description;
+                        }
+                    }
+
+                    tagMapping[centralTag.Id] = localTag.Id;
+                }
+
+                // Export file records
+                var existingFiles = folderDb.LocalFileRecords.ToList();
+                var fileMapping = new Dictionary<int, int>(); // central ID -> local ID
+
+                foreach (var centralFile in centralDir.FileRecords)
+                {
+                    var localFile = existingFiles.FirstOrDefault(f =>
+                        string.Equals(f.RelativePath, centralFile.RelativePath, StringComparison.OrdinalIgnoreCase));
+
+                    if (localFile == null)
+                    {
+                        localFile = new LocalFileRecord
+                        {
+                            FileName = centralFile.FileName,
+                            RelativePath = centralFile.RelativePath,
+                            LastModified = centralFile.LastModified,
+                            FileSize = centralFile.FileSize,
+                            CreatedAt = centralFile.CreatedAt
+                        };
+                        folderDb.LocalFileRecords.Add(localFile);
+                        folderDb.SaveChanges();
+                        existingFiles.Add(localFile);
+                        result.FilesExported++;
+            }
+            else
+            {
+                        // Update if central is newer
+                        if (centralFile.LastModified > localFile.LastModified)
+                        {
+                            localFile.LastModified = centralFile.LastModified;
+                            localFile.FileSize = centralFile.FileSize;
+                        }
+                    }
+
+                    fileMapping[centralFile.Id] = localFile.Id;
+                }
+
+                // Export file-tag associations
+                var existingAssociations = folderDb.LocalFileTags.ToList()
+                    .Select(ft => (ft.LocalFileRecordId, ft.LocalTagId))
+                    .ToHashSet();
+
+                var centralFileTags = centralDb.FileTags
+                    .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
+                    .ToList();
+
+                foreach (var centralFileTag in centralFileTags)
+                {
+                    if (!fileMapping.ContainsKey(centralFileTag.FileRecordId) ||
+                        !tagMapping.ContainsKey(centralFileTag.TagId))
+                        continue;
+
+                    var localFileId = fileMapping[centralFileTag.FileRecordId];
+                    var localTagId = tagMapping[centralFileTag.TagId];
+
+                    if (!existingAssociations.Contains((localFileId, localTagId)))
+                    {
+                        folderDb.LocalFileTags.Add(new LocalFileTag
+                        {
+                            LocalFileRecordId = localFileId,
+                            LocalTagId = localTagId
+                        });
+                        result.AssociationsExported++;
+                    }
+                }
+
+                folderDb.SaveChanges();
+                centralDir.LastSyncAt = DateTime.UtcNow;
+                centralDb.SaveChanges();
+
+                result.Success = true;
+            }
+            catch (Exception ex)
+            {
+                result.Errors.Add($"Push failed: {ex.Message}");
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Clean up a folder: Pull all data, verify files exist, delete all .filetagger directories, push clean copy
+        /// </summary>
+        public CleanupResult CleanupFolder(string directoryPath)
+        {
+            var result = new CleanupResult { DirectoryPath = directoryPath };
+
+            try
+            {
+                // Step 1: Pull all data from folder databases into central database
+                var pullResult = PullFromFolder(directoryPath);
+                result.PullResult = pullResult;
+
+                if (!pullResult.Success && pullResult.Errors.Any())
+                {
+                    result.Errors.AddRange(pullResult.Errors);
+                    // Continue anyway to clean up
+                }
+
+                // Step 2: Verify files exist and remove entries for missing files
+                var verificationResult = VerifyAndCleanupFilesForDirectory(directoryPath);
+                result.VerificationResult = verificationResult;
+
+                if (!verificationResult.Success && verificationResult.Errors.Any())
+                {
+                    result.Errors.AddRange(verificationResult.Errors);
+                }
+
+                // Step 3: Release all database connections before deleting
+                ReleaseAllDatabaseConnections();
+
+                // Step 4: Delete ALL .filetagger directories (including base and all duplicates)
+                var fileTaggerDirs = FindAllFileTaggerDirectories(directoryPath);
+                foreach (var ftDir in fileTaggerDirs)
+                {
+                    if (SafeDeleteDirectory(ftDir, result.Errors))
+                    {
+                        result.DirectoriesDeleted++;
+                    }
+                }
+
+                // Step 5: Push clean copy back to folder (creates fresh .filetagger)
+                var pushResult = PushToFolder(directoryPath);
+                result.PushResult = pushResult;
+
+                if (!pushResult.Success)
+                {
+                    result.Errors.AddRange(pushResult.Errors);
+                }
+
+                result.Success = result.DirectoriesDeleted > 0 || pullResult.DatabasesPulled > 0;
+            }
+            catch (Exception ex)
+            {
+                result.Errors.Add($"Cleanup failed: {ex.Message}");
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Pull data from all watched directories
+        /// </summary>
+        public List<PullResult> PullFromAllFolders()
+        {
+            var results = new List<PullResult>();
+            var directories = GetAllActiveDirectories();
+
+            foreach (var dir in directories)
+            {
+                results.Add(PullFromFolder(dir));
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Push data to all watched directories
+        /// </summary>
+        public List<PushResult> PushToAllFolders()
+        {
+            var results = new List<PushResult>();
+            var directories = GetAllActiveDirectories();
+            
+            foreach (var dir in directories)
+            {
+                results.Add(PushToFolder(dir));
+            }
+
+            return results;
+        }
+
+        #endregion
+
+        #region Tag Management
+
+        /// <summary>
+        /// Add a tag to a file
+        /// </summary>
+        public void AddTagToFile(string filePath, string tagName, string tagDescription = "")
+        {
+            var watchedDir = GetWatchedDirectoryForFile(filePath);
+            if (string.IsNullOrEmpty(watchedDir))
+                return;
+
+            using var centralDb = new CentralDbContext();
+
+            var centralDir = centralDb.Directories.FirstOrDefault(d =>
+                d.DirectoryPath.ToLower() == watchedDir.ToLower());
+
+            if (centralDir == null)
+                return;
+
+            var relativePath = Path.GetRelativePath(watchedDir, filePath);
+            var fileName = Path.GetFileName(filePath);
+
+            // Get or create file record
+            var fileRecord = centralDb.FileRecords.FirstOrDefault(f =>
+                f.DirectoryId == centralDir.Id &&
+                f.RelativePath.ToLower() == relativePath.ToLower());
+
+            if (fileRecord == null)
+            {
+                var fileInfo = new FileInfo(filePath);
+                fileRecord = new CentralFileRecord
+                {
+                    FileName = fileName,
+                    RelativePath = relativePath,
+                    DirectoryId = centralDir.Id,
+                    LastModified = fileInfo.Exists ? fileInfo.LastWriteTime : DateTime.UtcNow,
+                    FileSize = fileInfo.Exists ? fileInfo.Length : 0
+                };
+                centralDb.FileRecords.Add(fileRecord);
+                centralDb.SaveChanges();
+            }
+
+            // Get or create tag
+            var tag = centralDb.Tags.FirstOrDefault(t =>
+                t.DirectoryId == centralDir.Id &&
+                t.Name.ToLower() == tagName.ToLower());
+
+            if (tag == null)
+            {
+                tag = new CentralTag
+                {
+                    Name = tagName,
+                    Description = tagDescription,
+                    DirectoryId = centralDir.Id,
+                    LastUsedAt = DateTime.UtcNow
+                };
+                centralDb.Tags.Add(tag);
+                centralDb.SaveChanges();
+                }
+                else
+                {
+                tag.LastUsedAt = DateTime.UtcNow;
+            }
+
+            // Create file-tag association if it doesn't exist
+            var existingAssociation = centralDb.FileTags.FirstOrDefault(ft =>
+                ft.FileRecordId == fileRecord.Id && ft.TagId == tag.Id);
+
+            if (existingAssociation == null)
+            {
+                centralDb.FileTags.Add(new CentralFileTag
+                {
+                    FileRecordId = fileRecord.Id,
+                    TagId = tag.Id
+                });
+            }
+
+            centralDb.SaveChanges();
+        }
+
+        /// <summary>
+        /// Remove a tag from a file
+        /// </summary>
+        public void RemoveTagFromFile(string filePath, string tagName)
+        {
+            var watchedDir = GetWatchedDirectoryForFile(filePath);
+            if (string.IsNullOrEmpty(watchedDir))
+                return;
+
+            using var centralDb = new CentralDbContext();
+
+            var centralDir = centralDb.Directories.FirstOrDefault(d =>
+                d.DirectoryPath.ToLower() == watchedDir.ToLower());
+
+            if (centralDir == null)
+                return;
+
+            var relativePath = Path.GetRelativePath(watchedDir, filePath);
+
+            var fileRecord = centralDb.FileRecords.FirstOrDefault(f =>
+                f.DirectoryId == centralDir.Id &&
+                f.RelativePath.ToLower() == relativePath.ToLower());
+
+            if (fileRecord == null)
+                return;
+
+            var tag = centralDb.Tags.FirstOrDefault(t =>
+                t.DirectoryId == centralDir.Id &&
+                t.Name.ToLower() == tagName.ToLower());
+
+            if (tag == null)
+                return;
+
+            var association = centralDb.FileTags.FirstOrDefault(ft =>
+                ft.FileRecordId == fileRecord.Id && ft.TagId == tag.Id);
+
+            if (association != null)
+            {
+                centralDb.FileTags.Remove(association);
+                centralDb.SaveChanges();
+            }
+        }
+
+        /// <summary>
+        /// Get all available tags from all active directories
+        /// </summary>
+        public List<TagInfo> GetAllAvailableTags()
+        {
+            using var centralDb = new CentralDbContext();
+
+            var tags = centralDb.Tags
+                .Include(t => t.Directory)
+                .Include(t => t.FileTags)
+                .Where(t => t.Directory.IsActive)
+                .ToList();
+
+            return tags
+                .GroupBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(g => new TagInfo
+                {
+                    Name = g.Key,
+                    Description = g.First().Description,
+                    TotalUsageCount = g.Sum(t => t.FileTags.Count),
+                    SourceDirectories = g.Select(t => t.Directory.DirectoryPath).Distinct().ToList()
+                })
+                .Where(t => t.TotalUsageCount > 0) // Only show tags with files
+                .OrderBy(t => t.Name)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Create a standalone tag in a specific directory
+        /// </summary>
+        public void CreateStandaloneTag(string directoryPath, string tagName, string tagDescription = "")
+        {
+            if (string.IsNullOrEmpty(directoryPath) || string.IsNullOrEmpty(tagName))
+                return;
+
+            using var centralDb = new CentralDbContext();
+
+            var centralDir = centralDb.Directories.FirstOrDefault(d =>
+                d.DirectoryPath.ToLower() == directoryPath.ToLower());
+
+            if (centralDir == null)
+                return;
+
+            var existingTag = centralDb.Tags.FirstOrDefault(t =>
+                t.DirectoryId == centralDir.Id &&
+                t.Name.ToLower() == tagName.ToLower());
+
+            if (existingTag != null)
+            {
+                if (!string.IsNullOrEmpty(tagDescription))
+                {
+                    existingTag.Description = tagDescription;
+                    existingTag.LastUsedAt = DateTime.UtcNow;
+                    centralDb.SaveChanges();
+                }
+                return;
+            }
+
+            var tag = new CentralTag
+            {
+                Name = tagName,
+                Description = tagDescription,
+                DirectoryId = centralDir.Id,
+                LastUsedAt = DateTime.UtcNow
+            };
+            centralDb.Tags.Add(tag);
+            centralDb.SaveChanges();
+        }
+
+        /// <summary>
+        /// Create a standalone tag in all active directories
+        /// </summary>
+        public void CreateStandaloneTagInAllDirectories(string tagName, string tagDescription = "")
+        {
+            var directories = GetAllActiveDirectories();
+            foreach (var dir in directories)
+            {
+                CreateStandaloneTag(dir, tagName, tagDescription);
+            }
+        }
+
+        /// <summary>
+        /// Update a tag name across all directories
+        /// </summary>
+        public void UpdateTagName(string oldName, string newName)
+        {
+            using var centralDb = new CentralDbContext();
+
+            var tagsToUpdate = centralDb.Tags
+                .Where(t => t.Name.ToLower() == oldName.ToLower())
+                .ToList();
+
+            foreach (var tag in tagsToUpdate)
+            {
+                tag.Name = newName;
+            }
+
+            centralDb.SaveChanges();
+        }
+
+        /// <summary>
+        /// Update a tag description across all directories
+        /// </summary>
+        public void UpdateTagDescription(string tagName, string newDescription)
+        {
+            using var centralDb = new CentralDbContext();
+
+            var tagsToUpdate = centralDb.Tags
+                .Where(t => t.Name.ToLower() == tagName.ToLower())
+                .ToList();
+
+            foreach (var tag in tagsToUpdate)
+            {
+                tag.Description = newDescription;
+            }
+
+            centralDb.SaveChanges();
+        }
+
+        /// <summary>
+        /// Delete a tag from all directories
+        /// </summary>
+        public void DeleteTag(string tagName)
+        {
+            using var centralDb = new CentralDbContext();
+
+            var tagsToDelete = centralDb.Tags
+                .Include(t => t.FileTags)
+                .Where(t => t.Name.ToLower() == tagName.ToLower())
+                .ToList();
+
+            foreach (var tag in tagsToDelete)
+            {
+                centralDb.Tags.Remove(tag);
+            }
+
+            centralDb.SaveChanges();
+        }
+
+        #endregion
+
+        #region File Management
+
+        /// <summary>
+        /// Get all files with tags across all active directories
+        /// </summary>
+        public List<FileWithTags> GetAllFilesWithTags()
+        {
+            using var centralDb = new CentralDbContext();
+
+            var files = centralDb.FileRecords
+                .Include(f => f.Directory)
+                .Include(f => f.FileTags)
+                    .ThenInclude(ft => ft.Tag)
+                .Where(f => f.Directory.IsActive && f.FileTags.Any())
+                .ToList();
+
+            return files.Select(f => new FileWithTags
+            {
+                FileName = f.FileName,
+                FullPath = Path.Combine(f.Directory.DirectoryPath, f.RelativePath),
+                DirectoryPath = f.Directory.DirectoryPath,
+                LastModified = f.LastModified,
+                FileSize = f.FileSize,
+                Tags = f.FileTags.Select(ft => ft.Tag.Name).ToList()
+            })
+            .OrderBy(f => f.FileName)
+            .ToList();
+        }
+
+        /// <summary>
+        /// Get untagged files from watched directories
+        /// </summary>
+        public List<FileWithTags> GetUntaggedFiles()
+        {
+            var result = new List<FileWithTags>();
+            var directories = GetAllActiveDirectories();
+
+            using var centralDb = new CentralDbContext();
+
+            // Get all tagged file paths
+            var taggedFilePaths = centralDb.FileRecords
+                .Include(f => f.Directory)
+                .Include(f => f.FileTags)
+                .Where(f => f.Directory.IsActive && f.FileTags.Any())
+                .Select(f => Path.Combine(f.Directory.DirectoryPath, f.RelativePath))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var dir in directories)
+            {
+                try
+                {
+                    var allFiles = Directory.GetFiles(dir, "*", SearchOption.AllDirectories);
+
+                    foreach (var filePath in allFiles)
+                    {
+                        if (taggedFilePaths.Contains(filePath))
+                            continue;
+
+                        try
+                {
+                    var fileInfo = new FileInfo(filePath);
+                            result.Add(new FileWithTags
+                    {
+                                FileName = fileInfo.Name,
+                                FullPath = filePath,
+                                DirectoryPath = dir,
+                        LastModified = fileInfo.LastWriteTime,
+                                FileSize = fileInfo.Length,
+                                Tags = new List<string>()
+                            });
+                        }
+                        catch
+                        {
+                            // Skip files that can't be accessed
+                        }
+                    }
+                }
+                catch
+                {
+                    // Skip directories with issues
+                }
+            }
+
+            return result.OrderBy(f => f.FileName).ToList();
+        }
+
+        /// <summary>
+        /// Get all files in watched directories (both tagged and untagged)
+        /// </summary>
+        public List<FileWithTags> GetAllFilesInWatchedDirectories()
+        {
+            var result = new Dictionary<string, FileWithTags>(StringComparer.OrdinalIgnoreCase);
+            var directories = GetAllActiveDirectories();
+
+            using var centralDb = new CentralDbContext();
+
+            // Get all tagged files
+            var taggedFiles = centralDb.FileRecords
+                .Include(f => f.Directory)
+                .Include(f => f.FileTags)
+                    .ThenInclude(ft => ft.Tag)
+                .Where(f => f.Directory.IsActive)
+                .ToList();
+
+            foreach (var file in taggedFiles)
+            {
+                var fullPath = Path.Combine(file.Directory.DirectoryPath, file.RelativePath);
+                result[fullPath] = new FileWithTags
+                {
+                    FileName = file.FileName,
+                    FullPath = fullPath,
+                    DirectoryPath = file.Directory.DirectoryPath,
+                    LastModified = file.LastModified,
+                    FileSize = file.FileSize,
+                    Tags = file.FileTags.Select(ft => ft.Tag.Name).ToList()
+                };
+            }
+
+            // Get all files from filesystem
+            foreach (var dir in directories)
+            {
+                try
+                {
+                    var allFiles = Directory.GetFiles(dir, "*", SearchOption.AllDirectories);
+
+                    foreach (var filePath in allFiles)
+                    {
+                        if (result.ContainsKey(filePath))
+                            continue;
+
+                        try
+                        {
+                            var fileInfo = new FileInfo(filePath);
+                            result[filePath] = new FileWithTags
+                            {
+                                FileName = fileInfo.Name,
+                                FullPath = filePath,
+                                DirectoryPath = dir,
+                                LastModified = fileInfo.LastWriteTime,
+                                FileSize = fileInfo.Length,
+                                Tags = new List<string>()
+                            };
+                        }
+                        catch
+                        {
+                            // Skip files that can't be accessed
+                        }
+                    }
+                }
+                catch
+                {
+                    // Skip directories with issues
+                }
+            }
+
+            return result.Values.OrderBy(f => f.FileName).ToList();
+        }
+
+        /// <summary>
+        /// Get or create a directory database context (legacy compatibility)
+        /// WARNING: In the new architecture, prefer using central database methods
+        /// </summary>
+        public DirectoryDbContext GetDirectoryDb(string directoryPath)
+        {
+            var dirDb = new DirectoryDbContext(directoryPath);
+            dirDb.Database.EnsureCreated();
+            return dirDb;
+        }
+
+        /// <summary>
+        /// Get tags for a specific file
+        /// </summary>
+        public List<string> GetTagsForFile(string filePath)
+        {
+            var watchedDir = GetWatchedDirectoryForFile(filePath);
+            if (string.IsNullOrEmpty(watchedDir))
+                return new List<string>();
+
+            using var centralDb = new CentralDbContext();
+
+            var centralDir = centralDb.Directories.FirstOrDefault(d =>
+                d.DirectoryPath.ToLower() == watchedDir.ToLower());
+
+            if (centralDir == null)
+                return new List<string>();
+
+            var relativePath = Path.GetRelativePath(watchedDir, filePath);
+
+            var fileRecord = centralDb.FileRecords
+                .Include(f => f.FileTags)
+                    .ThenInclude(ft => ft.Tag)
+                .FirstOrDefault(f =>
+                    f.DirectoryId == centralDir.Id &&
+                    f.RelativePath.ToLower() == relativePath.ToLower());
+
+            if (fileRecord == null)
+                return new List<string>();
+
+            return fileRecord.FileTags.Select(ft => ft.Tag.Name).ToList();
+        }
+
+        /// <summary>
+        /// Verify that all tagged files exist and clean up missing files
+        /// </summary>
+        public FileVerificationResult VerifyAndCleanupTaggedFiles()
+        {
+            var result = new FileVerificationResult();
+            var affectedTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            using var centralDb = new CentralDbContext();
+
+            var files = centralDb.FileRecords
+                .Include(f => f.Directory)
+                .Include(f => f.FileTags)
+                    .ThenInclude(ft => ft.Tag)
+                .Where(f => f.Directory.IsActive)
+                .ToList();
+
+            var fileTagsToRemove = new List<CentralFileTag>();
+            var fileRecordsToRemove = new List<CentralFileRecord>();
+
+            foreach (var file in files)
+            {
+                var fullPath = Path.Combine(file.Directory.DirectoryPath, file.RelativePath);
+                result.TotalFilesChecked++;
+
+                if (!File.Exists(fullPath))
+                {
+                    result.MissingFiles.Add(fullPath);
+                    result.MissingFilesCount++;
+
+                    // Track affected tags and collect file-tag associations to remove
+                    foreach (var fileTag in file.FileTags)
+                    {
+                        affectedTags.Add(fileTag.Tag.Name);
+                        fileTagsToRemove.Add(fileTag);
+                    }
+
+                    fileRecordsToRemove.Add(file);
+                }
+                else
+                {
+                    result.ExistingFilesCount++;
+                }
+            }
+
+            // Explicitly remove file-tag associations first (this updates tag counts)
+            centralDb.FileTags.RemoveRange(fileTagsToRemove);
+            centralDb.SaveChanges();
+
+            // Then remove file records
+            centralDb.FileRecords.RemoveRange(fileRecordsToRemove);
+            centralDb.SaveChanges();
+
+            result.AffectedTags = affectedTags.ToList();
+            result.Success = result.Errors.Count == 0;
+            return result;
+        }
+
+        /// <summary>
+        /// Verify and clean up files for a specific directory only
+        /// </summary>
+        public FileVerificationResult VerifyAndCleanupFilesForDirectory(string directoryPath)
+        {
+            var result = new FileVerificationResult();
+            var affectedTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            using var centralDb = new CentralDbContext();
+
+            var centralDir = centralDb.Directories.FirstOrDefault(d =>
+                d.DirectoryPath.ToLower() == directoryPath.ToLower());
+
+            if (centralDir == null)
+            {
+                result.Errors.Add($"Directory not found: {directoryPath}");
+                result.Success = false;
+                return result;
+            }
+
+            var files = centralDb.FileRecords
+                .Include(f => f.Directory)
+                .Include(f => f.FileTags)
+                    .ThenInclude(ft => ft.Tag)
+                .Where(f => f.DirectoryId == centralDir.Id)
+                .ToList();
+
+            var fileTagsToRemove = new List<CentralFileTag>();
+            var fileRecordsToRemove = new List<CentralFileRecord>();
+
+            foreach (var file in files)
+            {
+                var fullPath = Path.Combine(file.Directory.DirectoryPath, file.RelativePath);
+                result.TotalFilesChecked++;
+
+                if (!File.Exists(fullPath))
+                {
+                    result.MissingFiles.Add(fullPath);
+                    result.MissingFilesCount++;
+
+                    // Track affected tags and collect file-tag associations to remove
+                    foreach (var fileTag in file.FileTags)
+                    {
+                        affectedTags.Add(fileTag.Tag.Name);
+                        fileTagsToRemove.Add(fileTag);
+                    }
+
+                    fileRecordsToRemove.Add(file);
+                }
+                else
+                {
+                    result.ExistingFilesCount++;
+                }
+            }
+
+            // Explicitly remove file-tag associations first (this updates tag counts)
+            centralDb.FileTags.RemoveRange(fileTagsToRemove);
+            centralDb.SaveChanges();
+
+            // Then remove file records
+            centralDb.FileRecords.RemoveRange(fileRecordsToRemove);
+            centralDb.SaveChanges();
+
+            result.AffectedTags = affectedTags.ToList();
+            result.Success = result.Errors.Count == 0;
+            return result;
+        }
+
+        #endregion
+
+        #region Synchronization (Legacy Support)
+
+        /// <summary>
+        /// Synchronize all tags (refreshes from central database)
+        /// </summary>
+        public void SynchronizeAllTags()
+        {
+            // In the new architecture, all data is in central DB
+            // This method now just verifies and cleans up
+            VerifyAndCleanupTaggedFiles();
+        }
+
+        /// <summary>
+        /// Synchronize tags for a specific directory (legacy support)
+        /// </summary>
+        public void SynchronizeDirectoryTags(string directoryPath)
+        {
+            // In new architecture, this is a no-op as all data is already centralized
+            // Kept for API compatibility
+        }
+
+        #endregion
+
+        #region Database Merge (Legacy Support)
+
+        /// <summary>
+        /// Find and merge all duplicate .filetagger databases
+        /// In the new architecture, this pulls from all duplicates then cleans up
+        /// </summary>
+        public DatabaseMergeResult MergeAllDuplicateFileTaggerDatabases()
+        {
+            var result = new DatabaseMergeResult();
+            var directories = GetAllActiveDirectories();
+
+            foreach (var dir in directories)
+            {
+                var duplicateDirs = FindDuplicateFileTaggerDirectories(dir);
+                if (duplicateDirs.Any())
+                {
+                    result.DirectoriesWithDuplicates++;
+                    result.DuplicateDatabasesFound += duplicateDirs.Count;
+
+                    // Pull from all (including duplicates) into central database
+                    var pullResult = PullFromFolder(dir);
+
+                    // Release all database connections before deleting
+                    ReleaseAllDatabaseConnections();
+
+                    // Delete duplicates only (keep the original .filetagger)
+                    foreach (var dupDir in duplicateDirs)
+                    {
+                        if (SafeDeleteDirectory(dupDir, result.Errors))
+                        {
+                            result.DuplicateDatabasesDeleted++;
+                        }
+                    }
+
+                    result.TagsMerged += pullResult.TagsImported;
+                    result.FilesMerged += pullResult.FilesImported;
+                    result.AssociationsMerged += pullResult.AssociationsImported;
+                }
+            }
+
+            result.Success = result.Errors.Count == 0;
+            return result;
+        }
+
+        #endregion
+
+        #region Discovery
+
+        /// <summary>
+        /// Discover and import existing .filetagger directories
+        /// </summary>
+        public List<string> DiscoverAndImportExistingDatabases(string rootPath = null)
+        {
+            var discoveredDirectories = new List<string>();
+            var searchRoots = string.IsNullOrEmpty(rootPath) ? GetSearchRoots() : new List<string> { rootPath };
+
+            using var centralDb = new CentralDbContext();
+            var existingDirs = centralDb.Directories.Select(d => d.DirectoryPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var searchRoot in searchRoots)
+            {
+                try
+                {
+                    if (!Directory.Exists(searchRoot))
+                        continue;
+
+                    var fileTaggerDirs = Directory.GetDirectories(searchRoot, ".filetagger", SearchOption.AllDirectories);
+
+                    foreach (var ftDir in fileTaggerDirs)
+                    {
+                        var parentDir = Path.GetDirectoryName(ftDir);
+                        if (string.IsNullOrEmpty(parentDir) || existingDirs.Contains(parentDir))
+                            continue;
+                        
+                        var dbFile = Path.Combine(ftDir, "tags.db");
+                        if (File.Exists(dbFile))
+                        {
+                            AddWatchedDirectory(parentDir);
+                            discoveredDirectories.Add(parentDir);
+                            existingDirs.Add(parentDir);
+                        }
+                    }
+                }
+                catch
+                {
+                            continue;
+                }
+            }
+
+            return discoveredDirectories;
+        }
+
         private List<string> GetSearchRoots()
         {
             var searchRoots = new List<string>();
 
             try
             {
-                // Add user profile directories
                 var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 if (!string.IsNullOrEmpty(userProfile))
                 {
                     searchRoots.Add(userProfile);
-                    
-                    // Add common subdirectories
+
                     var commonDirs = new[] { "Documents", "Downloads", "Desktop", "Pictures", "Videos" };
                     foreach (var dir in commonDirs)
                     {
@@ -155,725 +1234,372 @@ namespace FileTagger.Services
                     }
                 }
 
-                // Add all logical drives (but limit search depth for performance)
                 var drives = DriveInfo.GetDrives()
                     .Where(d => d.DriveType == DriveType.Fixed && d.IsReady)
                     .Select(d => d.RootDirectory.FullName);
-                
+
                 searchRoots.AddRange(drives);
-            }
-            catch
-            {
-                // If we can't get search roots, just use current directory
+                        }
+                        catch
+                        {
                 searchRoots.Add(Environment.CurrentDirectory);
             }
 
             return searchRoots;
         }
 
-        /// <summary>
-        /// Get or create a directory database context for the specified path
-        /// WARNING: This method should only be used with explicitly watched directories
-        /// For files in subdirectories, use GetDirectoryDbForFile instead
-        /// </summary>
-        public DirectoryDbContext GetDirectoryDb(string directoryPath)
+        #endregion
+
+        #region Helper Methods
+
+        private List<string> FindAllFileTaggerDirectories(string directoryPath)
         {
-            // Optional safety check - uncomment to enforce watched directory requirement
-            // var watchedDirs = GetAllActiveDirectories();
-            // if (!watchedDirs.Contains(directoryPath, StringComparer.OrdinalIgnoreCase))
-            // {
-            //     throw new InvalidOperationException($"Directory '{directoryPath}' is not a watched directory. Use GetDirectoryDbForFile for files in subdirectories.");
-            // }
-            
-            var dirDb = new DirectoryDbContext(directoryPath);
-            dirDb.Database.EnsureCreated();
-            return dirDb;
+            var result = new List<string>();
+            var baseDir = Path.Combine(directoryPath, ".filetagger");
+
+            if (Directory.Exists(baseDir))
+                result.Add(baseDir);
+
+            // Find duplicates
+            result.AddRange(FindDuplicateFileTaggerDirectories(directoryPath));
+
+            return result;
         }
 
-        /// <summary>
-        /// Get the appropriate watched directory for a given file path
-        /// Returns the most specific (deepest) watched directory that contains the file
-        /// </summary>
-        public string GetWatchedDirectoryForFile(string filePath)
+        private List<string> FindDuplicateFileTaggerDirectories(string directoryPath)
         {
-            var applicableDirectories = GetApplicableDirectoriesForFile(filePath);
-            return applicableDirectories.FirstOrDefault(); // Most specific first due to OrderByDescending
-        }
+            var duplicates = new List<string>();
 
-        /// <summary>
-        /// Get the directory database context for a file, using the appropriate watched directory
-        /// This ensures subdirectory files use their parent watched directory's database
-        /// </summary>
-        public DirectoryDbContext GetDirectoryDbForFile(string filePath)
-        {
-            var watchedDirectory = GetWatchedDirectoryForFile(filePath);
-            if (string.IsNullOrEmpty(watchedDirectory))
+            for (int i = 1; i <= 20; i++)
             {
-                throw new InvalidOperationException($"File '{filePath}' is not in any watched directory. Please add the directory to File Tagger settings first.");
-            }
-            
-            return GetDirectoryDb(watchedDirectory);
-        }
-
-        /// <summary>
-        /// Manually discover and import existing .filetagger directories from a specific root path
-        /// </summary>
-        public List<string> DiscoverAndImportExistingDatabases(string rootPath = null)
-        {
-            var discoveredDirectories = new List<string>();
-            
-            try
-            {
-                using var mainDb = new MainDbContext();
-                var existingWatchedDirs = mainDb.WatchedDirectories
-                    .Select(d => d.DirectoryPath)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                var searchRoots = string.IsNullOrEmpty(rootPath) ? GetSearchRoots() : new List<string> { rootPath };
-
-                foreach (var searchRoot in searchRoots)
+                var duplicateDir = Path.Combine(directoryPath, $".filetagger ({i})");
+                if (Directory.Exists(duplicateDir))
                 {
-                    try
-                    {
-                        if (!Directory.Exists(searchRoot))
-                            continue;
-
-                        // Search for .filetagger directories recursively
-                        var fileTaggerDirs = Directory.GetDirectories(searchRoot, ".filetagger", SearchOption.AllDirectories);
-                        
-                        foreach (var fileTaggerDir in fileTaggerDirs)
-                        {
-                            // Get the parent directory (the actual directory we want to watch)
-                            var parentDir = Path.GetDirectoryName(fileTaggerDir);
-                            if (string.IsNullOrEmpty(parentDir) || existingWatchedDirs.Contains(parentDir))
-                                continue;
-
-                            // Check if there's a valid database file
-                            var dbFile = Path.Combine(fileTaggerDir, "tags.db");
-                            if (File.Exists(dbFile))
-                            {
-                                // Try to add the directory
-                                try
-                                {
-                                    var watchedDir = new WatchedDirectory
-                                    {
-                                        DirectoryPath = parentDir,
-                                        IsActive = true,
-                                        LastSyncAt = DateTime.UtcNow
-                                    };
-                                    mainDb.WatchedDirectories.Add(watchedDir);
-                                    discoveredDirectories.Add(parentDir);
-                                    existingWatchedDirs.Add(parentDir); // Update our cache to avoid duplicates
-                                }
-                                catch
-                                {
-                                    // Skip directories that can't be added (e.g., database constraint violations)
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        // Skip search roots that can't be accessed
-                        continue;
-                    }
-                }
-
-                if (discoveredDirectories.Any())
-                {
-                    mainDb.SaveChanges();
-                    // Sync tags from newly discovered directories
-                    foreach (var dir in discoveredDirectories)
-                    {
-                        try
-                        {
-                            SynchronizeDirectoryTags(dir);
-                        }
-                        catch
-                        {
-                            // Continue with other directories if one fails
-                        }
-                    }
+                    var dbPath = Path.Combine(duplicateDir, "tags.db");
+                    if (File.Exists(dbPath))
+                        duplicates.Add(duplicateDir);
                 }
             }
-            catch
-            {
-                // If discovery fails, return what we found so far
-            }
 
-            return discoveredDirectories;
+            return duplicates;
         }
 
         /// <summary>
-        /// Add a new watched directory and create its database
+        /// Force release all SQLite connections to allow file deletion
         /// </summary>
-        public void AddWatchedDirectory(string directoryPath)
+        private void ReleaseAllDatabaseConnections()
         {
-            using var mainDb = new MainDbContext();
+            // Clear SQLite connection pool to release all file handles
+            SqliteConnection.ClearAllPools();
             
-            var existingDir = mainDb.WatchedDirectories.FirstOrDefault(d => d.DirectoryPath == directoryPath);
-            if (existingDir != null)
+            // Force garbage collection to release any remaining references
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            
+            // Give the OS time to release file handles
+            System.Threading.Thread.Sleep(200);
+        }
+
+        /// <summary>
+        /// Safely delete a directory containing database files
+        /// </summary>
+        private bool SafeDeleteDirectory(string directoryPath, List<string> errors)
             {
-                existingDir.IsActive = true;
-                existingDir.LastSyncAt = DateTime.UtcNow;
-            }
-            else
-            {
-                mainDb.WatchedDirectories.Add(new WatchedDirectory
+                try
                 {
-                    DirectoryPath = directoryPath,
-                    IsActive = true
-                });
-            }
-            
-            mainDb.SaveChanges();
-
-            // Create/ensure directory database exists
-            using var dirDb = GetDirectoryDb(directoryPath);
-            
-            // Sync tags from this directory
-            SynchronizeDirectoryTags(directoryPath);
-        }
-
-        /// <summary>
-        /// Remove a watched directory and clean up its tags
-        /// </summary>
-        public void RemoveWatchedDirectory(string directoryPath)
-        {
-            using var mainDb = new MainDbContext();
-            
-            var directory = mainDb.WatchedDirectories.FirstOrDefault(d => d.DirectoryPath == directoryPath);
-            if (directory != null)
-            {
-                directory.IsActive = false;
+                // Release all connections before attempting delete
+                ReleaseAllDatabaseConnections();
                 
-                // Remove aggregated tags that are only from this directory
-                var tagsToRemove = mainDb.AggregatedTags
-                    .Where(at => at.SourceDirectoryId == directory.Id)
-                    .ToList();
-                
-                foreach (var tag in tagsToRemove)
+                // Try to delete
+                if (Directory.Exists(directoryPath))
                 {
-                    // Check if this tag exists in other active directories
-                    var existsElsewhere = GetAllActiveDirectories()
-                        .Where(d => d != directoryPath)
-                        .Any(d => DirectoryHasTag(d, tag.Name));
-                    
-                    if (!existsElsewhere)
-                    {
-                        mainDb.AggregatedTags.Remove(tag);
-                    }
+                    Directory.Delete(directoryPath, true);
+                    return true;
                 }
-                
-                mainDb.SaveChanges();
+                return false;
             }
-        }
-
-        /// <summary>
-        /// Synchronize tags from all directory databases to main database
-        /// </summary>
-        public void SynchronizeAllTags()
-        {
-            var activeDirectories = GetAllActiveDirectories();
-            
-            foreach (var directoryPath in activeDirectories)
+            catch (Exception ex)
             {
-                SynchronizeDirectoryTags(directoryPath);
-            }
-        }
-
-        /// <summary>
-        /// Synchronize tags from a specific directory database to main database
-        /// </summary>
-        public void SynchronizeDirectoryTags(string directoryPath)
-        {
-            using var mainDb = new MainDbContext();
-            
-            var watchedDir = mainDb.WatchedDirectories.FirstOrDefault(d => d.DirectoryPath == directoryPath && d.IsActive);
-            if (watchedDir == null) return;
-
-            using var dirDb = GetDirectoryDb(directoryPath);
-            var localTags = dirDb.LocalTags.Include(t => t.LocalFileTags).ToList();
-
-            foreach (var localTag in localTags)
-            {
-                var aggregatedTag = mainDb.AggregatedTags.FirstOrDefault(at => 
-                    at.Name == localTag.Name && at.SourceDirectoryId == watchedDir.Id);
-
-                if (aggregatedTag == null)
-                {
-                    // Create new aggregated tag
-                    aggregatedTag = new AggregatedTag
-                    {
-                        Name = localTag.Name,
-                        Description = localTag.Description,
-                        SourceDirectoryId = watchedDir.Id,
-                        CreatedAt = localTag.CreatedAt,
-                        LastSeenAt = DateTime.UtcNow,
-                        UsageCount = localTag.LocalFileTags.Count
-                    };
-                    mainDb.AggregatedTags.Add(aggregatedTag);
-                }
-                else
-                {
-                    // Update existing aggregated tag
-                    aggregatedTag.Description = localTag.Description;
-                    aggregatedTag.LastSeenAt = DateTime.UtcNow;
-                    aggregatedTag.UsageCount = localTag.LocalFileTags.Count;
-                }
-            }
-
-            watchedDir.LastSyncAt = DateTime.UtcNow;
-            mainDb.SaveChanges();
-        }
-
-        /// <summary>
-        /// Get all available tags from all active directories
-        /// </summary>
-        public List<TagInfo> GetAllAvailableTags()
-        {
-            using var mainDb = new MainDbContext();
-            
-            return mainDb.AggregatedTags
-                .Include(at => at.SourceDirectory)
-                .Where(at => at.SourceDirectory.IsActive)
-                .GroupBy(at => at.Name)
-                .Select(g => new TagInfo
-                {
-                    Name = g.Key,
-                    Description = g.First().Description,
-                    TotalUsageCount = g.Sum(at => at.UsageCount),
-                    SourceDirectories = g.Select(at => at.SourceDirectory.DirectoryPath).ToList()
-                })
-                .OrderBy(t => t.Name)
-                .ToList();
-        }
-
-        /// <summary>
-        /// Get all active watched directories
-        /// </summary>
-        public List<string> GetAllActiveDirectories()
-        {
-            using var mainDb = new MainDbContext();
-            return mainDb.WatchedDirectories
-                .Where(d => d.IsActive)
-                .Select(d => d.DirectoryPath)
-                .ToList();
-        }
-
-        /// <summary>
-        /// Get all watched directories that should contain tags for a given file path
-        /// Returns directories in order from most specific (deepest) to least specific (shallowest)
-        /// </summary>
-        public List<string> GetApplicableDirectoriesForFile(string filePath)
-        {
-            var watchedDirs = GetAllActiveDirectories();
-            var fileDir = Path.GetDirectoryName(filePath);
-            
-            if (string.IsNullOrEmpty(fileDir))
-                return new List<string>();
-
-            // Find all watched directories that contain this file
-            var applicableDirs = watchedDirs
-                .Where(wd => fileDir.StartsWith(wd, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(wd => wd.Length) // Most specific first (deepest directory)
-                .ToList();
-
-            return applicableDirs;
-        }
-
-        /// <summary>
-        /// Check if a directory has a specific tag
-        /// </summary>
-        private bool DirectoryHasTag(string directoryPath, string tagName)
-        {
-            try
-            {
-                using var dirDb = GetDirectoryDb(directoryPath);
-                return dirDb.LocalTags.Any(t => t.Name == tagName);
-            }
-            catch
-            {
+                errors.Add($"Failed to delete {directoryPath}: {ex.Message}");
                 return false;
             }
         }
 
-        /// <summary>
-        /// Create a standalone tag in a specific directory (without attaching to a file)
-        /// </summary>
-        public void CreateStandaloneTag(string directoryPath, string tagName, string tagDescription = "")
+        private void PullFromFolderInternal(CentralDbContext centralDb, CentralDirectory centralDir)
         {
-            if (string.IsNullOrEmpty(directoryPath) || string.IsNullOrEmpty(tagName))
-                return;
+            var fileTaggerDirs = FindAllFileTaggerDirectories(centralDir.DirectoryPath);
 
-            using var dirDb = GetDirectoryDb(directoryPath);
-
-            // Check if tag already exists
-            var existingTag = dirDb.LocalTags.FirstOrDefault(t => t.Name == tagName);
-            if (existingTag != null)
+            foreach (var ftDir in fileTaggerDirs)
             {
-                // Update description if provided
-                if (!string.IsNullOrEmpty(tagDescription))
+                var dbPath = Path.Combine(ftDir, "tags.db");
+                if (File.Exists(dbPath))
                 {
-                    existingTag.Description = tagDescription;
-                    existingTag.LastUsedAt = DateTime.UtcNow;
-                    dirDb.SaveChanges();
-                }
-                return;
-            }
-
-            // Create new tag
-            var tag = new LocalTag
-            {
-                Name = tagName,
-                Description = tagDescription,
-                LastUsedAt = DateTime.UtcNow
-            };
-            dirDb.LocalTags.Add(tag);
-            dirDb.SaveChanges();
-
-            // Sync this directory's tags to main database
-            SynchronizeDirectoryTags(directoryPath);
-        }
-
-        /// <summary>
-        /// Create a standalone tag in all active directories
-        /// </summary>
-        public void CreateStandaloneTagInAllDirectories(string tagName, string tagDescription = "")
-        {
-            var activeDirectories = GetAllActiveDirectories();
-            
-            foreach (var directoryPath in activeDirectories)
-            {
-                try
-                {
-                    CreateStandaloneTag(directoryPath, tagName, tagDescription);
-                }
-                catch
-                {
-                    // Skip directories with issues
-                    continue;
+                    try
+                    {
+                        ImportFromFolderDatabase(centralDb, centralDir, dbPath);
+                    }
+                    catch
+                    {
+                        // Skip databases that can't be imported
+                    }
                 }
             }
         }
 
-        /// <summary>
-        /// Add a tag to a file in a specific directory
-        /// </summary>
-        public void AddTagToFile(string filePath, string tagName, string tagDescription = "")
+        private (int TagsImported, int FilesImported, int AssociationsImported) ImportFromFolderDatabase(
+            CentralDbContext centralDb, CentralDirectory centralDir, string dbPath)
         {
-            // Get all directories that should contain this tag
-            var applicableDirectories = GetApplicableDirectoriesForFile(filePath);
-            
-            if (!applicableDirectories.Any())
-                return;
+            int tagsImported = 0, filesImported = 0, associationsImported = 0;
 
-            var fileName = Path.GetFileName(filePath);
+            List<LocalTag> localTags;
+            List<LocalFileRecord> localFiles;
 
-            // Add tag to each applicable directory's database
-            foreach (var directoryPath in applicableDirectories)
+            // Read data using a direct SQLite connection to avoid connection pooling issues
+            var connectionString = $"Data Source={dbPath};Mode=ReadOnly;Pooling=False";
+
+            // Read data in separate scope with explicit connection management
+            using (var connection = new SqliteConnection(connectionString))
             {
-                var relativePath = Path.GetRelativePath(directoryPath, filePath);
+                connection.Open();
+                
+                var options = new DbContextOptionsBuilder<DirectoryDbContext>()
+                    .UseSqlite(connection)
+                    .Options;
 
-                using var dirDb = GetDirectoryDb(directoryPath);
-
-                // Get or create file record
-                var fileRecord = dirDb.LocalFileRecords.FirstOrDefault(f => f.RelativePath == relativePath);
-                if (fileRecord == null)
+                using (var folderDb = new DirectoryDbContext(centralDir.DirectoryPath))
                 {
-                    var fileInfo = new FileInfo(filePath);
-                    fileRecord = new LocalFileRecord
-                    {
-                        FileName = fileName,
-                        RelativePath = relativePath,
-                        LastModified = fileInfo.LastWriteTime,
-                        FileSize = fileInfo.Length
-                    };
-                    dirDb.LocalFileRecords.Add(fileRecord);
-                    dirDb.SaveChanges();
+                    folderDb.Database.SetConnectionString(connectionString);
+
+                    localTags = folderDb.LocalTags.ToList();
+                    localFiles = folderDb.LocalFileRecords
+                        .Include(f => f.LocalFileTags)
+                        .ToList();
+
+                    folderDb.Database.CloseConnection();
                 }
+                
+                connection.Close();
+            }
+            
+            // Clear the connection from pool immediately
+            SqliteConnection.ClearPool(new SqliteConnection(connectionString));
 
-                // Get or create tag
-                var tag = dirDb.LocalTags.FirstOrDefault(t => t.Name == tagName);
-                if (tag == null)
+            // Import tags
+            var existingTags = centralDb.Tags
+                .Where(t => t.DirectoryId == centralDir.Id)
+                .ToList();
+            var tagMapping = new Dictionary<int, int>();
+
+            foreach (var localTag in localTags)
+            {
+                var existingTag = existingTags.FirstOrDefault(t =>
+                    string.Equals(t.Name, localTag.Name, StringComparison.OrdinalIgnoreCase));
+
+                if (existingTag == null)
                 {
-                    tag = new LocalTag
+                    var newTag = new CentralTag
                     {
-                        Name = tagName,
-                        Description = tagDescription,
-                        LastUsedAt = DateTime.UtcNow
+                        Name = localTag.Name,
+                        Description = localTag.Description,
+                        DirectoryId = centralDir.Id,
+                        CreatedAt = localTag.CreatedAt,
+                        LastUsedAt = localTag.LastUsedAt
                     };
-                    dirDb.LocalTags.Add(tag);
-                    dirDb.SaveChanges();
+                    centralDb.Tags.Add(newTag);
+                    centralDb.SaveChanges();
+                    existingTags.Add(newTag);
+                    tagMapping[localTag.Id] = newTag.Id;
+                    tagsImported++;
                 }
                 else
                 {
-                    tag.LastUsedAt = DateTime.UtcNow;
-                }
-
-                // Create file-tag association if it doesn't exist
-                var existingAssociation = dirDb.LocalFileTags
-                    .FirstOrDefault(lft => lft.LocalFileRecordId == fileRecord.Id && lft.LocalTagId == tag.Id);
-
-                if (existingAssociation == null)
-                {
-                    dirDb.LocalFileTags.Add(new LocalFileTag
+                    if (localTag.LastUsedAt > existingTag.LastUsedAt)
                     {
-                        LocalFileRecordId = fileRecord.Id,
-                        LocalTagId = tag.Id
-                    });
-                    dirDb.SaveChanges();
+                        existingTag.LastUsedAt = localTag.LastUsedAt;
+                    }
+                    tagMapping[localTag.Id] = existingTag.Id;
                 }
-
-                // Sync this directory's tags to main database
-                SynchronizeDirectoryTags(directoryPath);
             }
-        }
 
-        /// <summary>
-        /// Get all files with tags across all directories
-        /// Consolidates tags from multiple directories for the same file
-        /// </summary>
-        public List<FileWithTags> GetAllFilesWithTags()
-        {
-            var fileMap = new Dictionary<string, FileWithTags>(StringComparer.OrdinalIgnoreCase);
-            var activeDirectories = GetAllActiveDirectories();
+            // Import files
+            var existingFiles = centralDb.FileRecords
+                .Where(f => f.DirectoryId == centralDir.Id)
+                .ToList();
+            var fileMapping = new Dictionary<int, int>();
 
-            foreach (var directoryPath in activeDirectories)
+            foreach (var localFile in localFiles)
             {
-                try
-                {
-                    using var dirDb = GetDirectoryDb(directoryPath);
-                    var files = dirDb.LocalFileRecords
-                        .Include(f => f.LocalFileTags)
-                        .ThenInclude(lft => lft.LocalTag)
-                        .ToList();
+                var existingFile = existingFiles.FirstOrDefault(f =>
+                    string.Equals(f.RelativePath, localFile.RelativePath, StringComparison.OrdinalIgnoreCase));
 
-                    foreach (var file in files)
+                if (existingFile == null)
+                {
+                    var newFile = new CentralFileRecord
                     {
-                        var fullPath = Path.Combine(directoryPath, file.RelativePath);
-                        
-                        // Check if file already exists in our map
-                        if (fileMap.TryGetValue(fullPath, out var existingFile))
+                        FileName = localFile.FileName,
+                        RelativePath = localFile.RelativePath,
+                        DirectoryId = centralDir.Id,
+                        CreatedAt = localFile.CreatedAt,
+                        LastModified = localFile.LastModified,
+                        FileSize = localFile.FileSize
+                    };
+                    centralDb.FileRecords.Add(newFile);
+                    centralDb.SaveChanges();
+                    existingFiles.Add(newFile);
+                    fileMapping[localFile.Id] = newFile.Id;
+                    filesImported++;
+                }
+                else
+                {
+                    if (localFile.LastModified > existingFile.LastModified)
+                    {
+                        existingFile.LastModified = localFile.LastModified;
+                        existingFile.FileSize = localFile.FileSize;
+                    }
+                    fileMapping[localFile.Id] = existingFile.Id;
+                }
+            }
+
+            // Import associations
+            var existingAssociations = centralDb.FileTags
+                .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
+                .Select(ft => new { ft.FileRecordId, ft.TagId })
+                .ToHashSet();
+
+            foreach (var localFile in localFiles)
+            {
+                if (!fileMapping.ContainsKey(localFile.Id))
+                    continue;
+
+                var newFileId = fileMapping[localFile.Id];
+
+                foreach (var localFileTag in localFile.LocalFileTags)
+                {
+                    if (!tagMapping.ContainsKey(localFileTag.LocalTagId))
+                        continue;
+
+                    var newTagId = tagMapping[localFileTag.LocalTagId];
+
+                    var assocKey = new { FileRecordId = newFileId, TagId = newTagId };
+                    if (!existingAssociations.Any(a => a.FileRecordId == newFileId && a.TagId == newTagId))
+                    {
+                        centralDb.FileTags.Add(new CentralFileTag
                         {
-                            // Merge tags from this directory with existing tags
-                            var newTags = file.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList();
-                            existingFile.Tags = existingFile.Tags.Union(newTags).Distinct().ToList();
-                            
-                            // Update last modified if this one is newer
-                            if (file.LastModified > existingFile.LastModified)
-                            {
-                                existingFile.LastModified = file.LastModified;
-                            }
-                        }
-                        else
-                        {
-                            // Add new file
-                            fileMap[fullPath] = new FileWithTags
-                            {
-                                FileName = file.FileName,
-                                FullPath = fullPath,
-                                DirectoryPath = GetMostSpecificDirectory(fullPath, activeDirectories),
-                                LastModified = file.LastModified,
-                                FileSize = file.FileSize,
-                                Tags = file.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList()
-                            };
-                        }
+                            FileRecordId = newFileId,
+                            TagId = newTagId
+                        });
+                        associationsImported++;
                     }
                 }
-                catch
-                {
-                    // Skip directories with database issues
-                    continue;
-                }
             }
 
-            return fileMap.Values.OrderBy(f => f.FileName).ToList();
+            centralDb.SaveChanges();
+
+            return (tagsImported, filesImported, associationsImported);
         }
 
         /// <summary>
-        /// Get the most specific (deepest) directory that contains a file
+        /// Get database path for a directory (for UI display)
         /// </summary>
-        private string GetMostSpecificDirectory(string filePath, List<string> directories)
+        public string GetDatabasePathForDirectory(string directoryPath)
         {
-            var fileDir = Path.GetDirectoryName(filePath) ?? "";
-            return directories
-                .Where(d => fileDir.StartsWith(d, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(d => d.Length)
-                .FirstOrDefault() ?? fileDir;
+            // In new architecture, always return central database path
+            return GetCentralDatabasePath();
         }
 
         /// <summary>
-        /// Get information about which directories contain tags for a specific file
-        /// Useful for debugging and understanding the hierarchical system
+        /// Check if a folder database exists for a directory
         /// </summary>
-        public List<string> GetDirectoriesContainingFile(string filePath)
+        public bool FolderDatabaseExists(string directoryPath)
         {
-            var applicableDirectories = GetApplicableDirectoriesForFile(filePath);
-            var directoriesWithFile = new List<string>();
-
-            foreach (var directoryPath in applicableDirectories)
-            {
-                try
-                {
-                    var relativePath = Path.GetRelativePath(directoryPath, filePath);
-                    using var dirDb = GetDirectoryDb(directoryPath);
-                    
-                    var fileExists = dirDb.LocalFileRecords
-                        .Any(f => f.RelativePath == relativePath);
-                    
-                    if (fileExists)
-                    {
-                        directoriesWithFile.Add(directoryPath);
-                    }
-                }
-                catch
-                {
-                    // Skip directories with issues
-                    continue;
-                }
-            }
-
-            return directoriesWithFile;
+            var dbPath = Path.Combine(directoryPath, ".filetagger", "tags.db");
+            return File.Exists(dbPath);
         }
 
         /// <summary>
-        /// Get all files in watched directories that have no tags
+        /// Check if duplicate folder databases exist
         /// </summary>
-        public List<FileWithTags> GetUntaggedFiles()
+        public bool HasDuplicateDatabases(string directoryPath)
         {
-            var fileMap = new Dictionary<string, FileWithTags>(StringComparer.OrdinalIgnoreCase);
-            var activeDirectories = GetAllActiveDirectories();
-
-            foreach (var directoryPath in activeDirectories)
-            {
-                try
-                {
-                    // Get all files from the file system in this directory
-                    var allFiles = Directory.GetFiles(directoryPath, "*", SearchOption.AllDirectories);
-                    
-                    using var dirDb = GetDirectoryDb(directoryPath);
-                    var taggedFiles = dirDb.LocalFileRecords
-                        .Include(f => f.LocalFileTags)
-                        .Where(f => f.LocalFileTags.Any())
-                        .Select(f => Path.Combine(directoryPath, f.RelativePath))
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                    foreach (var filePath in allFiles)
-                    {
-                        // Skip if this file is already tagged in any database
-                        if (taggedFiles.Contains(filePath))
-                            continue;
-                        
-                        // Skip if we already processed this file from another directory
-                        if (fileMap.ContainsKey(filePath))
-                            continue;
-
-                        try
-                        {
-                            var fileInfo = new FileInfo(filePath);
-                            fileMap[filePath] = new FileWithTags
-                            {
-                                FileName = fileInfo.Name,
-                                FullPath = filePath,
-                                DirectoryPath = GetMostSpecificDirectory(filePath, activeDirectories),
-                                LastModified = fileInfo.LastWriteTime,
-                                FileSize = fileInfo.Length,
-                                Tags = new List<string>() // No tags
-                            };
-                        }
-                        catch
-                        {
-                            // Skip files that can't be accessed
-                            continue;
-                        }
-                    }
-                }
-                catch
-                {
-                    // Skip directories with issues
-                    continue;
-                }
-            }
-
-            return fileMap.Values.OrderBy(f => f.FileName).ToList();
+            return FindDuplicateFileTaggerDirectories(directoryPath).Any();
         }
 
-        /// <summary>
-        /// Get all files in watched directories (both tagged and untagged)
-        /// </summary>
-        public List<FileWithTags> GetAllFilesInWatchedDirectories()
-        {
-            var fileMap = new Dictionary<string, FileWithTags>(StringComparer.OrdinalIgnoreCase);
-            var activeDirectories = GetAllActiveDirectories();
+        #endregion
+    }
 
-            foreach (var directoryPath in activeDirectories)
-            {
-                try
-                {
-                    // Get all files from the file system in this directory
-                    var allFiles = Directory.GetFiles(directoryPath, "*", SearchOption.AllDirectories);
-                    
-                    using var dirDb = GetDirectoryDb(directoryPath);
-                    var taggedFilesMap = dirDb.LocalFileRecords
-                        .Include(f => f.LocalFileTags)
-                        .ThenInclude(lft => lft.LocalTag)
-                        .ToDictionary(f => Path.Combine(directoryPath, f.RelativePath), 
-                                    f => f, 
-                                    StringComparer.OrdinalIgnoreCase);
+    #region Result Classes
 
-                    foreach (var filePath in allFiles)
-                    {
-                        // Check if we already processed this file from another directory
-                        if (fileMap.TryGetValue(filePath, out var existingFile))
-                        {
-                            // Merge tags if this file is also tagged in this directory
-                            if (taggedFilesMap.TryGetValue(filePath, out var taggedFile))
-                            {
-                                var newTags = taggedFile.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList();
-                                existingFile.Tags = existingFile.Tags.Union(newTags).Distinct().ToList();
-                            }
-                            continue;
-                        }
+    /// <summary>
+    /// Result of a Pull operation
+    /// </summary>
+    public class PullResult
+    {
+        public string DirectoryPath { get; set; } = string.Empty;
+        public bool Success { get; set; }
+        public int DatabasesFound { get; set; }
+        public int DatabasesPulled { get; set; }
+        public int TagsImported { get; set; }
+        public int FilesImported { get; set; }
+        public int AssociationsImported { get; set; }
+        public List<string> Errors { get; set; } = new List<string>();
+    }
 
-                        try
-                        {
-                            var fileInfo = new FileInfo(filePath);
-                            var tags = new List<string>();
-                            
-                            // Get tags if file is in database
-                            if (taggedFilesMap.TryGetValue(filePath, out var taggedFile))
-                            {
-                                tags = taggedFile.LocalFileTags.Select(lft => lft.LocalTag.Name).ToList();
-                            }
+    /// <summary>
+    /// Result of a Push operation
+    /// </summary>
+    public class PushResult
+    {
+        public string DirectoryPath { get; set; } = string.Empty;
+        public bool Success { get; set; }
+        public int TagsExported { get; set; }
+        public int FilesExported { get; set; }
+        public int AssociationsExported { get; set; }
+        public List<string> Errors { get; set; } = new List<string>();
+    }
 
-                            fileMap[filePath] = new FileWithTags
-                            {
-                                FileName = fileInfo.Name,
-                                FullPath = filePath,
-                                DirectoryPath = GetMostSpecificDirectory(filePath, activeDirectories),
-                                LastModified = fileInfo.LastWriteTime,
-                                FileSize = fileInfo.Length,
-                                Tags = tags
-                            };
-                        }
-                        catch
-                        {
-                            // Skip files that can't be accessed
-                            continue;
-                        }
-                    }
-                }
-                catch
-                {
-                    // Skip directories with issues
-                    continue;
-                }
-            }
+    /// <summary>
+    /// Result of a Cleanup operation
+    /// </summary>
+    public class CleanupResult
+    {
+        public string DirectoryPath { get; set; } = string.Empty;
+        public bool Success { get; set; }
+        public int DirectoriesDeleted { get; set; }
+        public PullResult PullResult { get; set; }
+        public FileVerificationResult VerificationResult { get; set; }
+        public PushResult PushResult { get; set; }
+        public List<string> Errors { get; set; } = new List<string>();
+    }
 
-            return fileMap.Values.OrderBy(f => f.FileName).ToList();
-        }
+    /// <summary>
+    /// Result of database merge operation (legacy)
+    /// </summary>
+    public class DatabaseMergeResult
+    {
+        public bool Success { get; set; }
+        public int DirectoriesWithDuplicates { get; set; }
+        public int DuplicateDatabasesFound { get; set; }
+        public int DuplicateDatabasesDeleted { get; set; }
+        public int TagsMerged { get; set; }
+        public int FilesMerged { get; set; }
+        public int AssociationsMerged { get; set; }
+        public List<string> Errors { get; set; } = new List<string>();
+    }
+
+    /// <summary>
+    /// Result of file verification and cleanup operation
+    /// </summary>
+    public class FileVerificationResult
+    {
+        public bool Success { get; set; }
+        public int TotalFilesChecked { get; set; }
+        public int ExistingFilesCount { get; set; }
+        public int MissingFilesCount { get; set; }
+        public int TagsRemoved { get; set; }
+        public List<string> MissingFiles { get; set; } = new List<string>();
+        public List<string> AffectedTags { get; set; } = new List<string>();
+        public List<string> Errors { get; set; } = new List<string>();
     }
 
     /// <summary>
@@ -912,4 +1638,6 @@ namespace FileTagger.Services
             }
         }
     }
+
+    #endregion
 }
