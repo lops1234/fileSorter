@@ -686,18 +686,10 @@ namespace FileTagger
         #region Tag Management
 
         private List<TagInfo> _allTags = new List<TagInfo>();
-        // Track original database names for each TagInfo object
-        private Dictionary<TagInfo, string> _originalTagNames = new Dictionary<TagInfo, string>();
 
         private void LoadTags()
         {
             _allTags = DatabaseManager.Instance.GetAllAvailableTags();
-            // Store original names for edit tracking
-            _originalTagNames.Clear();
-            foreach (var tag in _allTags)
-            {
-                _originalTagNames[tag] = tag.Name;
-            }
             ApplyTagFilter();
         }
 
@@ -841,18 +833,10 @@ namespace FileTagger
 
         private void TagsDataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
         {
-            // Store the ORIGINAL database name when editing starts
+            // Store the original tag name when editing starts
             if (e.Row.Item is TagInfo tagInfo)
             {
-                // Use tracked original name, not the current (possibly already edited) UI value
-                if (_originalTagNames.TryGetValue(tagInfo, out var originalName))
-                {
-                    _currentEditingTagName = originalName;
-                }
-                else
-                {
-                    _currentEditingTagName = tagInfo.Name;
-                }
+                _currentEditingTagName = tagInfo.Name;
             }
         }
 
@@ -866,49 +850,29 @@ namespace FileTagger
 
             if (e.Row.Item is TagInfo tagInfo && !string.IsNullOrEmpty(_currentEditingTagName))
             {
-                var originalDbName = _currentEditingTagName;
-                
-                // Get the edited value directly from the TextBox
-                string editedValue = "";
-                if (e.EditingElement is TextBox textBox)
+                // Delay to allow the binding to update first
+                Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    editedValue = textBox.Text?.Trim() ?? "";
-                }
+                    var originalName = _currentEditingTagName;
+                    var newName = tagInfo.Name?.Trim() ?? "";
+                    var newDescription = tagInfo.Description?.Trim() ?? "";
 
-                // Determine which column was edited
-                var columnHeader = e.Column.Header?.ToString() ?? "";
-                
-                // Get current values (use existing edit if available, otherwise from tagInfo)
-                string currentName;
-                string currentDescription;
-                
-                if (_editedTags.TryGetValue(originalDbName, out var existing))
-                {
-                    currentName = existing.NewName;
-                    currentDescription = existing.NewDescription;
-                }
-                else
-                {
-                    currentName = tagInfo.Name ?? "";
-                    currentDescription = tagInfo.Description ?? "";
-                }
+                    // Check if anything actually changed
+                    if (_editedTags.TryGetValue(originalName, out var existing))
+                    {
+                        // Update existing edit
+                        _editedTags[originalName] = (newName, newDescription);
+                    }
+                    else
+                    {
+                        // Track new edit (store original values for comparison)
+                        _editedTags[originalName] = (newName, newDescription);
+                    }
 
-                // Update the appropriate field
-                if (columnHeader == "Name")
-                {
-                    currentName = editedValue;
-                }
-                else if (columnHeader == "Description")
-                {
-                    currentDescription = editedValue;
-                }
-
-                // Store the edit
-                _editedTags[originalDbName] = (currentName, currentDescription);
-
-                // Enable save button
-                SaveTagChangesButton.IsEnabled = _editedTags.Count > 0;
-                _currentEditingTagName = null;
+                    // Enable save button if there are any changes
+                    SaveTagChangesButton.IsEnabled = _editedTags.Count > 0;
+                    _currentEditingTagName = null;
+                }), System.Windows.Threading.DispatcherPriority.Background);
             }
         }
 
