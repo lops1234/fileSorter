@@ -634,13 +634,15 @@ namespace FileTagger
                     $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
                     $"What it does:\n" +
                     $"  1. Import ALL data from folder into central database\n" +
-                    $"  2. DELETE ALL .filetagger folders:\n" +
+                    $"  2. Verify files exist and remove entries for missing files\n" +
+                    $"  3. DELETE ALL .filetagger folders:\n" +
                     $"     • .filetagger (the original)\n" +
                     $"     • .filetagger (1), (2), etc. (duplicates)\n" +
-                    $"  3. Create fresh .filetagger with clean database\n\n" +
+                    $"  4. Create fresh .filetagger with clean database\n\n" +
                     $"This completely fixes Google Drive sync conflicts\n" +
                     $"by starting fresh with a single clean database.\n\n" +
-                    $"⚠️ All folder databases will be deleted!",
+                    $"⚠️ All folder databases will be deleted!\n" +
+                    $"⚠️ Entries for missing files will be removed!",
                     "Cleanup Folder",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning);
@@ -657,9 +659,26 @@ namespace FileTagger
                         message += $"\nPull: {cleanupResult.PullResult.TagsImported} tags, {cleanupResult.PullResult.FilesImported} files imported";
                     }
 
+                    if (cleanupResult.VerificationResult != null)
+                    {
+                        message += $"\n\nVerification:";
+                        message += $"\n  Files checked: {cleanupResult.VerificationResult.TotalFilesChecked}";
+                        message += $"\n  Files exist: {cleanupResult.VerificationResult.ExistingFilesCount}";
+                        message += $"\n  Files removed: {cleanupResult.VerificationResult.MissingFilesCount}";
+                        
+                        if (cleanupResult.VerificationResult.AffectedTags.Any())
+                        {
+                            message += $"\n  Affected tags: {string.Join(", ", cleanupResult.VerificationResult.AffectedTags.Take(5))}";
+                            if (cleanupResult.VerificationResult.AffectedTags.Count > 5)
+                            {
+                                message += $" (+{cleanupResult.VerificationResult.AffectedTags.Count - 5} more)";
+                            }
+                        }
+                    }
+
                     if (cleanupResult.PushResult != null)
                     {
-                        message += $"\nPush: {cleanupResult.PushResult.TagsExported} tags, {cleanupResult.PushResult.FilesExported} files exported";
+                        message += $"\n\nPush: {cleanupResult.PushResult.TagsExported} tags, {cleanupResult.PushResult.FilesExported} files exported";
                     }
 
                     if (cleanupResult.Errors.Any())

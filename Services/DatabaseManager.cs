@@ -413,7 +413,7 @@ namespace FileTagger.Services
         }
 
         /// <summary>
-        /// Clean up a folder: Pull all data, delete all .filetagger directories, push clean copy
+        /// Clean up a folder: Pull all data, verify files exist, delete all .filetagger directories, push clean copy
         /// </summary>
         public CleanupResult CleanupFolder(string directoryPath)
         {
@@ -431,10 +431,19 @@ namespace FileTagger.Services
                     // Continue anyway to clean up
                 }
 
-                // Step 2: Release all database connections before deleting
+                // Step 2: Verify files exist and remove entries for missing files
+                var verificationResult = VerifyAndCleanupFilesForDirectory(directoryPath);
+                result.VerificationResult = verificationResult;
+
+                if (!verificationResult.Success && verificationResult.Errors.Any())
+                {
+                    result.Errors.AddRange(verificationResult.Errors);
+                }
+
+                // Step 3: Release all database connections before deleting
                 ReleaseAllDatabaseConnections();
 
-                // Step 3: Delete ALL .filetagger directories (including base and all duplicates)
+                // Step 4: Delete ALL .filetagger directories (including base and all duplicates)
                 var fileTaggerDirs = FindAllFileTaggerDirectories(directoryPath);
                 foreach (var ftDir in fileTaggerDirs)
                 {
@@ -444,7 +453,7 @@ namespace FileTagger.Services
                     }
                 }
 
-                // Step 4: Push clean copy back to folder (creates fresh .filetagger)
+                // Step 5: Push clean copy back to folder (creates fresh .filetagger)
                 var pushResult = PushToFolder(directoryPath);
                 result.PushResult = pushResult;
 
@@ -1020,6 +1029,74 @@ namespace FileTagger.Services
             return result;
         }
 
+        /// <summary>
+        /// Verify and clean up files for a specific directory only
+        /// </summary>
+        public FileVerificationResult VerifyAndCleanupFilesForDirectory(string directoryPath)
+        {
+            var result = new FileVerificationResult();
+            var affectedTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            using var centralDb = new CentralDbContext();
+
+            var centralDir = centralDb.Directories.FirstOrDefault(d =>
+                d.DirectoryPath.ToLower() == directoryPath.ToLower());
+
+            if (centralDir == null)
+            {
+                result.Errors.Add($"Directory not found: {directoryPath}");
+                result.Success = false;
+                return result;
+            }
+
+            var files = centralDb.FileRecords
+                .Include(f => f.Directory)
+                .Include(f => f.FileTags)
+                    .ThenInclude(ft => ft.Tag)
+                .Where(f => f.DirectoryId == centralDir.Id)
+                .ToList();
+
+            var fileTagsToRemove = new List<CentralFileTag>();
+            var fileRecordsToRemove = new List<CentralFileRecord>();
+
+            foreach (var file in files)
+            {
+                var fullPath = Path.Combine(file.Directory.DirectoryPath, file.RelativePath);
+                result.TotalFilesChecked++;
+
+                if (!File.Exists(fullPath))
+                {
+                    result.MissingFiles.Add(fullPath);
+                    result.MissingFilesCount++;
+
+                    // Track affected tags and collect file-tag associations to remove
+                    foreach (var fileTag in file.FileTags)
+                    {
+                        affectedTags.Add(fileTag.Tag.Name);
+                        fileTagsToRemove.Add(fileTag);
+                    }
+
+                    fileRecordsToRemove.Add(file);
+                }
+                else
+                {
+                    result.ExistingFilesCount++;
+                }
+            }
+
+            // Explicitly remove file-tag associations first (this updates tag counts)
+            centralDb.FileTags.RemoveRange(fileTagsToRemove);
+            centralDb.SaveChanges();
+
+            // Then remove file records
+            centralDb.FileRecords.RemoveRange(fileRecordsToRemove);
+            centralDb.SaveChanges();
+
+            result.AffectedTags = affectedTags.ToList();
+            result.Success = result.Errors.Count == 0;
+            return result;
+        }
+
         #endregion
 
         #region Synchronization (Legacy Support)
@@ -1490,6 +1567,7 @@ namespace FileTagger.Services
         public bool Success { get; set; }
         public int DirectoriesDeleted { get; set; }
         public PullResult PullResult { get; set; }
+        public FileVerificationResult VerificationResult { get; set; }
         public PushResult PushResult { get; set; }
         public List<string> Errors { get; set; } = new List<string>();
     }
