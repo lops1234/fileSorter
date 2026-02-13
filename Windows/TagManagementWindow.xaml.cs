@@ -235,5 +235,103 @@ namespace FileTagger.Windows
         }
 
         #endregion
+
+        #region Tag Autocomplete
+
+        private void NewTagTextBox_KeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                CreateAndAddTag_Click(sender, e);
+                return;
+            }
+
+            if (e.Key == System.Windows.Input.Key.Escape)
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
+            if (e.Key == System.Windows.Input.Key.Down && TagSuggestionsPopup.IsOpen)
+            {
+                if (TagSuggestionsListBox.Items.Count > 0)
+                {
+                    TagSuggestionsListBox.SelectedIndex = 0;
+                    TagSuggestionsListBox.Focus();
+                }
+                return;
+            }
+
+            var searchText = NewTagTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : NewTagTextBox.Text?.Trim();
+            
+            if (string.IsNullOrEmpty(searchText))
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
+            ShowTagSuggestions(searchText);
+        }
+
+        private void ShowTagSuggestions(string searchText)
+        {
+            if (string.IsNullOrWhiteSpace(searchText))
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                return;
+            }
+
+            var allTags = DatabaseManager.Instance.GetAllAvailableTags();
+            var matchingTags = allTags
+                .Where(t => t.Name.StartsWith(searchText, StringComparison.OrdinalIgnoreCase))
+                .Select(t => t.Name)
+                .Take(10)
+                .ToList();
+
+            if (matchingTags.Any())
+            {
+                TagSuggestionsListBox.ItemsSource = matchingTags;
+                TagSuggestionsPopup.IsOpen = true;
+            }
+            else
+            {
+                TagSuggestionsPopup.IsOpen = false;
+            }
+        }
+
+        private void TagSuggestion_Selected(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (TagSuggestionsListBox.SelectedItem is string selectedTag)
+            {
+                NewTagTextBox.Text = selectedTag;
+                NewTagTextBox.Foreground = System.Windows.Media.Brushes.Black;
+                TagSuggestionsPopup.IsOpen = false;
+                NewTagTextBox.Focus();
+                NewTagTextBox.CaretIndex = NewTagTextBox.Text.Length;
+            }
+        }
+
+        private void TagSuggestionsListBox_KeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+            {
+                if (TagSuggestionsListBox.SelectedItem is string selectedTag)
+                {
+                    NewTagTextBox.Text = selectedTag;
+                    NewTagTextBox.Foreground = System.Windows.Media.Brushes.Black;
+                    TagSuggestionsPopup.IsOpen = false;
+                    NewTagTextBox.Focus();
+                    NewTagTextBox.CaretIndex = NewTagTextBox.Text.Length;
+                }
+            }
+            else if (e.Key == System.Windows.Input.Key.Escape)
+            {
+                TagSuggestionsPopup.IsOpen = false;
+                NewTagTextBox.Focus();
+            }
+        }
+
+        #endregion
     }
 }
