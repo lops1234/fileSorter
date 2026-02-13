@@ -8,6 +8,23 @@ using FileTagger.Services;
 
 namespace FileTagger.Windows
 {
+    public class TagDisplayItem
+    {
+        public string TagName { get; set; }
+        public int FileCount { get; set; }
+        public int TotalFiles { get; set; }
+        
+        public override string ToString()
+        {
+            if (FileCount == TotalFiles && TotalFiles > 1)
+                return $"{TagName} (all {FileCount})";
+            else if (TotalFiles > 1)
+                return $"{TagName} ({FileCount}/{TotalFiles})";
+            else
+                return TagName;
+        }
+    }
+
     public partial class TagManagementWindow : Window
     {
         private readonly List<string> _filePaths;
@@ -90,7 +107,7 @@ namespace FileTagger.Windows
         {
             if (_filePaths.Count == 0)
             {
-                CurrentTagsListBox.ItemsSource = new List<string>();
+                CurrentTagsListBox.ItemsSource = new List<TagDisplayItem>();
                 return;
             }
 
@@ -102,37 +119,62 @@ namespace FileTagger.Windows
                 allFileTags.Add(tags);
             }
 
-            // Find common tags (intersection) - tags that ALL files have
-            List<string> commonTags;
-            if (allFileTags.Count == 1)
+            if (_filePaths.Count == 1)
             {
-                commonTags = allFileTags[0];
+                // Single file - show all tags
+                var displayItems = allFileTags[0]
+                    .OrderBy(t => t)
+                    .Select(t => new TagDisplayItem 
+                    { 
+                        TagName = t, 
+                        FileCount = 1, 
+                        TotalFiles = 1 
+                    })
+                    .ToList();
+                CurrentTagsListBox.ItemsSource = displayItems;
             }
             else
             {
-                commonTags = allFileTags
-                    .Skip(1)
-                    .Aggregate(
-                        new HashSet<string>(allFileTags[0], StringComparer.OrdinalIgnoreCase),
-                        (h, e) => { h.IntersectWith(e); return h; }
-                    )
-                    .OrderBy(t => t)
-                    .ToList();
-            }
+                // Multiple files - show all tags from any file (union)
+                // Count how many files have each tag
+                var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var fileTags in allFileTags)
+                {
+                    foreach (var tag in fileTags)
+                    {
+                        if (!tagCounts.ContainsKey(tag))
+                            tagCounts[tag] = 0;
+                        tagCounts[tag]++;
+                    }
+                }
 
-            CurrentTagsListBox.ItemsSource = commonTags;
+                // Create display items with count indicators
+                var displayItems = tagCounts
+                    .OrderBy(kvp => kvp.Key)
+                    .Select(kvp => new TagDisplayItem
+                    {
+                        TagName = kvp.Key,
+                        FileCount = kvp.Value,
+                        TotalFiles = _filePaths.Count
+                    })
+                    .ToList();
+
+                CurrentTagsListBox.ItemsSource = displayItems;
+            }
         }
 
         private void LoadAvailableTags()
         {
             var allTags = DatabaseManager.Instance.GetAllAvailableTags();
             
-            // Get common tags (tags that all files have)
-            var commonTags = CurrentTagsListBox.ItemsSource as List<string> ?? new List<string>();
+            // Get current tags
+            var currentTags = (CurrentTagsListBox.ItemsSource as List<TagDisplayItem> ?? new List<TagDisplayItem>())
+                .Select(t => t.TagName)
+                .ToList();
 
-            // Show tags that are not common to all files
+            // Show tags that are not already on the files
             var availableTags = allTags
-                .Where(t => !commonTags.Contains(t.Name, StringComparer.OrdinalIgnoreCase))
+                .Where(t => !currentTags.Contains(t.Name, StringComparer.OrdinalIgnoreCase))
                 .Select(t => t.Name)
                 .OrderBy(t => t)
                 .ToList();
@@ -152,14 +194,14 @@ namespace FileTagger.Windows
 
         private void RemoveTag_Click(object sender, RoutedEventArgs e)
         {
-            if (CurrentTagsListBox.SelectedItem is string selectedTagName)
+            if (CurrentTagsListBox.SelectedItem is TagDisplayItem selectedTag)
             {
                 try
                 {
-                    // Remove tag from all selected files
+                    // Remove tag from all selected files (only removes from files that have it)
                     foreach (var filePath in _filePaths)
                     {
-                        DatabaseManager.Instance.RemoveTagFromFile(filePath, selectedTagName);
+                        DatabaseManager.Instance.RemoveTagFromFile(filePath, selectedTag.TagName);
                     }
                     
                     LoadCurrentTags();

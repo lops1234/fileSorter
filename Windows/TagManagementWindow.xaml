@@ -57,7 +57,8 @@
         <!-- Current Tags -->
         <TextBlock Grid.Row="3" Text="Current Tags:" FontWeight="Bold" Margin="0,0,0,5"/>
         <ListBox Grid.Row="3" x:Name="CurrentTagsListBox" Margin="0,25,0,0" 
-                 SelectionChanged="CurrentTagsListBox_SelectionChanged">
+                 SelectionChanged="CurrentTagsListBox_SelectionChanged"
+                 DisplayMemberPath=".">
             <ListBox.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="Remove Tag" Click="RemoveTag_Click"/>
