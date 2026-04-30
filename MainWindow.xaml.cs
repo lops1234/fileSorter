@@ -826,6 +826,40 @@ namespace FileTagger
             }
         }
 
+        private void ExportAllTags_Click(object sender, RoutedEventArgs e)
+        {
+            var allTags = DatabaseManager.Instance.GetAllAvailableTags();
+            if (!allTags.Any())
+            {
+                MessageBox.Show("There are no tags to export.", "No Tags", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var content = string.Join(", ", allTags.OrderBy(t => t.Name).Select(t => t.Name));
+
+            var dialog = new SaveFileDialog
+            {
+                Title = "Export Tags",
+                Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
+                DefaultExt = "txt",
+                FileName = "tags"
+            };
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                try
+                {
+                    File.WriteAllText(dialog.FileName, content);
+                    MessageBox.Show($"Tags exported successfully to:\n{dialog.FileName}", "Export Complete",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Error saving file: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
         private void RefreshTags_Click(object sender, RoutedEventArgs e)
         {
             try
