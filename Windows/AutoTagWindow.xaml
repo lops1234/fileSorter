@@ -1,0 +1,87 @@
+<Window x:Class="FileTagger.Windows.AutoTagWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Auto Tag Images with AI" Height="720" Width="720"
+        WindowStartupLocation="CenterOwner"
+        Closing="Window_Closing">
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Auto Tag Images with AI (LLaMA)" FontSize="16" FontWeight="Bold" Margin="0,0,0,12"/>
+
+        <!-- LLaMA Settings -->
+        <GroupBox Grid.Row="1" Header="LLaMA Settings" Margin="0,0,0,8" Padding="10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="70"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="80"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="llama-cli:" VerticalAlignment="Center" Margin="0,4"/>
+                <TextBox Grid.Row="0" Grid.Column="1" x:Name="LlamaPathTextBox" Margin="5,4" VerticalAlignment="Center"
+                         ToolTip="Full path to llama-cli.exe (e.g. C:\llama\llama-cli.exe)"/>
+                <Button Grid.Row="0" Grid.Column="2" Content="Browse..." Click="BrowseLlama_Click" Margin="5,4"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Model:" VerticalAlignment="Center" Margin="0,4"/>
+                <TextBox Grid.Row="1" Grid.Column="1" x:Name="ModelPathTextBox" Margin="5,4" VerticalAlignment="Center"
+                         ToolTip="Full path to the .gguf model file (e.g. llama-joycaption-beta-one-hf-llava.Q8_0.gguf)"/>
+                <Button Grid.Row="1" Grid.Column="2" Content="Browse..." Click="BrowseModel_Click" Margin="5,4"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="mmproj:" VerticalAlignment="Center" Margin="0,4"/>
+                <TextBox Grid.Row="2" Grid.Column="1" x:Name="MmprojPathTextBox" Margin="5,4" VerticalAlignment="Center"
+                         ToolTip="Full path to the mmproj .gguf file (e.g. mmproj-model-f16.gguf)"/>
+                <Button Grid.Row="2" Grid.Column="2" Content="Browse..." Click="BrowseMmproj_Click" Margin="5,4"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- Image Source -->
+        <GroupBox Grid.Row="2" Header="Image Source" Margin="0,0,0,8" Padding="10">
+            <StackPanel>
+                <RadioButton x:Name="AllDirectoriesRadio" Content="All watched directories" IsChecked="True" Margin="0,3"/>
+                <StackPanel Orientation="Horizontal" Margin="0,4">
+                    <RadioButton x:Name="SpecificDirectoryRadio" Content="Specific directory:" VerticalAlignment="Center"/>
+                    <ComboBox x:Name="DirectoryComboBox" Width="380" Margin="10,0,0,0" IsEnabled="False"/>
+                </StackPanel>
+            </StackPanel>
+        </GroupBox>
+
+        <!-- Progress -->
+        <GroupBox Grid.Row="3" Header="Progress" Margin="0,0,0,8" Padding="10">
+            <StackPanel>
+                <ProgressBar x:Name="ProgressBar" Height="18" Margin="0,0,0,5"/>
+                <TextBlock x:Name="ProgressLabel" Text="Ready" HorizontalAlignment="Center" Foreground="DarkBlue"/>
+            </StackPanel>
+        </GroupBox>
+
+        <!-- Log -->
+        <GroupBox Grid.Row="4" Header="Log" Margin="0,0,0,8" Padding="5">
+            <ScrollViewer x:Name="LogScrollViewer" VerticalScrollBarVisibility="Auto">
+                <TextBox x:Name="LogTextBox" IsReadOnly="True" TextWrapping="Wrap"
+                         Background="#1E1E1E" Foreground="#90EE90"
+                         FontFamily="Consolas" FontSize="11" BorderThickness="0"/>
+            </ScrollViewer>
+        </GroupBox>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="StartButton" Content="▶ Start Auto-Tagging" Click="Start_Click"
+                    Width="150" Margin="0,0,10,0" FontWeight="Bold"/>
+            <Button x:Name="CancelButton" Content="⏹ Cancel" Click="Cancel_Click"
+                    Width="90" Margin="0,0,10,0" IsEnabled="False"/>
+            <Button Content="Close" Click="Close_Click" Width="80"/>
+        </StackPanel>
+    </Grid>
+</Window>

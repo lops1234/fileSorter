@@ -630,6 +630,23 @@ namespace FileTagger.Services
         }
 
         /// <summary>
+        /// Get all tag names from all active directories, including tags with no file associations.
+        /// Used for building the AI prompt tag list.
+        /// </summary>
+        public List<string> GetAllTagNamesForPrompt()
+        {
+            using var centralDb = new CentralDbContext();
+
+            return centralDb.Tags
+                .Include(t => t.Directory)
+                .Where(t => t.Directory.IsActive)
+                .Select(t => t.Name)
+                .Distinct()
+                .OrderBy(n => n)
+                .ToList();
+        }
+
+        /// <summary>
         /// Get all available tags from all active directories
         /// </summary>
         public List<TagInfo> GetAllAvailableTags()

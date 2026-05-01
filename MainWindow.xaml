@@ -142,6 +142,9 @@
                     </DataGrid>
 
                     <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="AutoTagImagesButton" Content="🤖 Auto Tag with AI" Click="AutoTagImages_Click"
+                                Margin="0,0,10,0" FontWeight="Bold"
+                                ToolTip="Automatically tag images using a local LLaMA vision model"/>
                         <Button x:Name="ExportAllTagsButton" Content="Export All Tags..." Click="ExportAllTags_Click"
                                 Margin="0,0,10,0" ToolTip="Save all tags as a comma-separated text file"/>
                         <Button x:Name="SaveTagChangesButton" Content="Save Changes" Click="SaveTagChanges_Click" 

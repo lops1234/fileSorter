@@ -826,6 +826,16 @@ namespace FileTagger
             }
         }
 
+        private void AutoTagImages_Click(object sender, RoutedEventArgs e)
+        {
+            var window = new AutoTagWindow();
+            window.Owner = this;
+            window.ShowDialog();
+            // Refresh tag list to reflect any new tag associations added by auto-tagging
+            LoadTags();
+            LoadTagFilter();
+        }
+
         private void ExportAllTags_Click(object sender, RoutedEventArgs e)
         {
             var allTags = DatabaseManager.Instance.GetAllAvailableTags();
