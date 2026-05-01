@@ -98,6 +98,7 @@ namespace FileTagger.Windows
 
         private void BrowseLlama_Click(object sender, RoutedEventArgs e)
         {
+                        // TEMPORARY DEBUGGER TEST — remove after confirming breakpoints work
             var dlg = new OpenFileDialog
             {
                 Title = "Select llama-cli executable",

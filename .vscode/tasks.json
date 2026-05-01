@@ -2,33 +2,6 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "kill-existing",
-            "type": "shell",
-            "command": "taskkill /F /IM FileTagger.exe 2>nul; exit 0",
-            "problemMatcher": [],
-            "presentation": { "reveal": "never", "close": true }
-        },
-        {
-            "label": "build-debug",
-            "command": "dotnet",
-            "type": "process",
-            "args": [
-                "build",
-                "${workspaceFolder}/FileTagger.csproj",
-                "-c", "Debug",
-                "/property:GenerateFullPaths=true",
-                "/property:DebugType=portable",
-                "/property:DebugSymbols=true",
-                "/consoleloggerparameters:NoSummary;ForceNoAlign"
-            ],
-            "problemMatcher": "$msCompile",
-            "dependsOn": ["kill-existing"],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
-        },
-        {
             "label": "build",
             "command": "dotnet",
             "type": "process",
