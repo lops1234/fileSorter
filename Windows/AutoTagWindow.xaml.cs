@@ -369,7 +369,7 @@ namespace FileTagger.Windows
             var psi = new ProcessStartInfo
             {
                 FileName = llamaPath,
-                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" -p \"{escapedPrompt}\" --single-turn --simple-io",
+                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" -p \"{escapedPrompt}\" --single-turn --simple-io -ngl 0",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
