@@ -66,8 +66,24 @@ namespace FileTagger.Windows
             LoadSettings();
             LoadDirectories();
 
-            SpecificDirectoryRadio.Checked += (_, _) => DirectoryComboBox.IsEnabled = true;
-            AllDirectoriesRadio.Checked += (_, _) => DirectoryComboBox.IsEnabled = false;
+            AllDirectoriesRadio.Checked += (_, _) =>
+            {
+                DirectoryComboBox.IsEnabled = false;
+                SpecificImageTextBox.IsEnabled = false;
+                BrowseImageButton.IsEnabled = false;
+            };
+            SpecificDirectoryRadio.Checked += (_, _) =>
+            {
+                DirectoryComboBox.IsEnabled = true;
+                SpecificImageTextBox.IsEnabled = false;
+                BrowseImageButton.IsEnabled = false;
+            };
+            SpecificImageRadio.Checked += (_, _) =>
+            {
+                DirectoryComboBox.IsEnabled = false;
+                SpecificImageTextBox.IsEnabled = true;
+                BrowseImageButton.IsEnabled = true;
+            };
         }
 
         private void LoadSettings()
@@ -131,6 +147,17 @@ namespace FileTagger.Windows
                 MmprojPathTextBox.Text = dlg.FileName;
         }
 
+        private void BrowseImage_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new OpenFileDialog
+            {
+                Title = "Select image file",
+                Filter = "Image files (*.png;*.jpg;*.jpeg;*.webp)|*.png;*.jpg;*.jpeg;*.webp|All files (*.*)|*.*"
+            };
+            if (dlg.ShowDialog(this) == true)
+                SpecificImageTextBox.Text = dlg.FileName;
+        }
+
         #endregion
 
         #region Start / Cancel
@@ -165,49 +192,70 @@ namespace FileTagger.Windows
 
             SaveSettings();
 
-            // Collect target directories
-            List<string> targetDirs;
-            if (AllDirectoriesRadio.IsChecked == true)
+            // Collect image files
+            List<string> imageFiles;
+
+            if (SpecificImageRadio.IsChecked == true)
             {
-                targetDirs = DatabaseManager.Instance.GetAllActiveDirectories();
-            }
-            else
-            {
-                if (DirectoryComboBox.SelectedItem is string selectedDir)
-                    targetDirs = new List<string> { selectedDir };
-                else
+                var imagePath = SpecificImageTextBox.Text.Trim();
+                if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
                 {
-                    MessageBox.Show("Please select a directory.", "No Selection",
+                    MessageBox.Show("Please select a valid image file.", "No Image Selected",
                         MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
-            }
-
-            if (!targetDirs.Any())
-            {
-                MessageBox.Show("No watched directories configured.", "No Directories",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            // Collect image files that have no tags or only the 'AI-Tagged-Unchecked' tag
-            var imageFiles = targetDirs
-                .Where(Directory.Exists)
-                .SelectMany(d => Directory.GetFiles(d, "*", SearchOption.AllDirectories))
-                .Where(f => ImageExtensions.Contains(Path.GetExtension(f)))
-                .Where(f =>
+                if (!ImageExtensions.Contains(Path.GetExtension(imagePath)))
                 {
-                    var tags = DatabaseManager.Instance.GetTagsForFile(f);
-                    return tags.Count == 0 ||
-                           tags.All(t => t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase));
-                })
-                .ToList();
-
-            if (!imageFiles.Any())
+                    MessageBox.Show("The selected file is not a supported image type.", "Invalid File",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                imageFiles = new List<string> { imagePath };
+            }
+            else
             {
-                MessageBox.Show("No image files found in the selected directories.", "No Images",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                List<string> targetDirs;
+                if (AllDirectoriesRadio.IsChecked == true)
+                {
+                    targetDirs = DatabaseManager.Instance.GetAllActiveDirectories();
+                }
+                else
+                {
+                    if (DirectoryComboBox.SelectedItem is string selectedDir)
+                        targetDirs = new List<string> { selectedDir };
+                    else
+                    {
+                        MessageBox.Show("Please select a directory.", "No Selection",
+                            MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+                }
+
+                if (!targetDirs.Any())
+                {
+                    MessageBox.Show("No watched directories configured.", "No Directories",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                imageFiles = targetDirs
+                    .Where(Directory.Exists)
+                    .SelectMany(d => Directory.GetFiles(d, "*", SearchOption.AllDirectories))
+                    .Where(f => ImageExtensions.Contains(Path.GetExtension(f)))
+                    .Where(f =>
+                    {
+                        var tags = DatabaseManager.Instance.GetTagsForFile(f);
+                        return tags.Count == 0 ||
+                               tags.All(t => t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase));
+                    })
+                    .ToList();
+
+                if (!imageFiles.Any())
+                {
+                    MessageBox.Show("No untagged image files found in the selected directories.", "No Images",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
             }
 
             // Prepare UI
@@ -230,7 +278,8 @@ namespace FileTagger.Windows
 
             try
             {
-                await RunAutoTagging(llamaPath, modelPath, mmprojPath, imageFiles, token);
+                bool onlyDbTags = OnlyDbTagsCheckBox.IsChecked == true;
+                await RunAutoTagging(llamaPath, modelPath, mmprojPath, imageFiles, onlyDbTags, token);
             }
             catch (OperationCanceledException)
             {
@@ -263,7 +312,7 @@ namespace FileTagger.Windows
         #region Core Auto-Tagging Logic
 
         private async Task RunAutoTagging(string llamaPath, string modelPath, string mmprojPath,
-            List<string> imageFiles, CancellationToken token)
+            List<string> imageFiles, bool onlyDbTags, CancellationToken token)
         {
             int processed = 0;
             int tagsAdded = 0;
@@ -278,20 +327,21 @@ namespace FileTagger.Windows
                 // Re-fetch all tags from DB before each image so newly added tags are included
                 var allTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
 
-                if (!allTagNames.Any())
+                if (onlyDbTags && !allTagNames.Any())
                 {
                     Log("  [SKIP] No tags in database to match against.");
                     UpdateProgress(++processed, imageFiles.Count);
                     continue;
                 }
 
-                var tagListString = string.Join(", ", allTagNames);
+                var tagListString = onlyDbTags ? string.Join(", ", allTagNames) : string.Empty;
 
                 // Run llama-cli
                 string output;
                 try
                 {
                     output = await InvokeLlama(llamaPath, modelPath, mmprojPath, imagePath, tagListString, token);
+                    throw new InvalidOperationException($"llama-cli exited with code {output}.");
                 }
                 catch (OperationCanceledException)
                 {
@@ -313,19 +363,36 @@ namespace FileTagger.Windows
                 var preview = output.Length > 250 ? output[..250] + "..." : output;
                 Log($"  Output: {preview}");
 
-                // Parse tokens from output and match against known tags
                 var parsedTokens = ParseTokens(output);
-                var knownTagsSet = new HashSet<string>(allTagNames, StringComparer.OrdinalIgnoreCase);
-                var matchedTags = parsedTokens
-                    .Where(t => knownTagsSet.Contains(t))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
 
-                if (!matchedTags.Any())
+                List<string> matchedTags;
+                if (onlyDbTags)
                 {
-                    Log("  No tags from the database matched the output.");
-                    UpdateProgress(++processed, imageFiles.Count);
-                    continue;
+                    var knownTagsSet = new HashSet<string>(allTagNames, StringComparer.OrdinalIgnoreCase);
+                    matchedTags = parsedTokens
+                        .Where(t => knownTagsSet.Contains(t))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    if (!matchedTags.Any())
+                    {
+                        Log("  No tags from the database matched the output.");
+                        UpdateProgress(++processed, imageFiles.Count);
+                        continue;
+                    }
+                }
+                else
+                {
+                    matchedTags = parsedTokens
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    if (!matchedTags.Any())
+                    {
+                        Log("  No tags returned by LLM.");
+                        UpdateProgress(++processed, imageFiles.Count);
+                        continue;
+                    }
                 }
 
                 // Determine which matched tags are new to this image
@@ -361,15 +428,20 @@ namespace FileTagger.Windows
         private static async Task<string> InvokeLlama(string llamaPath, string modelPath, string mmprojPath,
             string imagePath, string tagList, CancellationToken token)
         {
-            tagList = "Anal, Angry, Anticipation, Ass, Ball gag, Blindfold, Bondage, Boobs, Boots, Boy, Buttplug, Choker, Cum, Demon, Dick, Dildo, Domination, Dominatrix, Elf, Fairy, Fantasy, Femboy, Femdom, Fishnets, Fucking, Furry, Futa, Ghotic, Girl, Humiliation, Leash, Lesbian, Nature, Neon, Pegging, Pole, Public, Slave, Strap-on, Tentacles";
-            var prompt = $"List tags for this image from provided tag list: {tagList}";
+            // tagList = "Anal, Angry, Anticipation, Ass, Ball gag, Blindfold, Bondage, Boobs, Boots, Boy, Buttplug, Choker, Cum, Demon, Dick, Dildo, Domination, Dominatrix, Elf, Fairy, Fantasy, Femboy, Femdom, Fishnets, Fucking, Furry, Futa, Ghotic, Girl, Humiliation, Leash, Lesbian, Nature, Neon, Pegging, Pole, Public, Slave, Strap-on, Tentacles";
+            // var prompt = $"List tags for this image from provided tag list: {tagList}";
+            // var prompt = "List explicit tags for this image";
+            var prompt = string.IsNullOrEmpty(tagList) ?
+             "List sexual content tags for this image" :
+              $"List tags for this image from provided tag list: {tagList}";
+            
             // Escape double-quotes inside the prompt for the command line
             var escapedPrompt = prompt.Replace("\"", "\\\"");
 
             var psi = new ProcessStartInfo
             {
                 FileName = llamaPath,
-                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" -p \"{escapedPrompt}\" --single-turn --simple-io -ngl 0",
+                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" -p \"{escapedPrompt}\" --single-turn --simple-io",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -397,8 +469,10 @@ namespace FileTagger.Windows
             var stdout = stdoutTask.Result;
             var stderr = stderrTask.Result;
 
-            if (!string.IsNullOrWhiteSpace(stderr))
-                throw new InvalidOperationException($"llama-cli reported an error:\n{stderr}");
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"llama-cli exited with code {process.ExitCode}." +
+                    (string.IsNullOrWhiteSpace(stderr) ? string.Empty : $"\n{stderr}"));
 
             return stdout;
         }
@@ -406,7 +480,10 @@ namespace FileTagger.Windows
         private static List<string> ParseTokens(string output)
         {
             // Split on commas and newlines, trim, strip trailing punctuation
-            return output
+            var tagsMarker = output.IndexOf("tags:", StringComparison.OrdinalIgnoreCase);
+            var relevant = tagsMarker >= 0 ? output[(tagsMarker + 5)..] : output;
+
+            return relevant
                 .Split(new[] { ',', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(t => t.Trim().TrimEnd('.', '!', '?', ';', ':'))
                 .Where(t => !string.IsNullOrWhiteSpace(t))

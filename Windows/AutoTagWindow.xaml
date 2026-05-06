@@ -10,6 +10,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -50,16 +51,27 @@
         <!-- Image Source -->
         <GroupBox Grid.Row="2" Header="Image Source" Margin="0,0,0,8" Padding="10">
             <StackPanel>
-                <RadioButton x:Name="AllDirectoriesRadio" Content="All watched directories" IsChecked="True" Margin="0,3"/>
+                <RadioButton x:Name="AllDirectoriesRadio" Content="All watched directories" IsChecked="True" Margin="0,3" GroupName="ImageSource"/>
                 <StackPanel Orientation="Horizontal" Margin="0,4">
-                    <RadioButton x:Name="SpecificDirectoryRadio" Content="Specific directory:" VerticalAlignment="Center"/>
-                    <ComboBox x:Name="DirectoryComboBox" Width="380" Margin="10,0,0,0" IsEnabled="False"/>
+                    <RadioButton x:Name="SpecificDirectoryRadio" Content="Specific directory:" VerticalAlignment="Center" GroupName="ImageSource"/>
+                    <ComboBox x:Name="DirectoryComboBox" Width="350" Margin="10,0,0,0" IsEnabled="False"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,4">
+                    <RadioButton x:Name="SpecificImageRadio" Content="Specific image:" VerticalAlignment="Center" GroupName="ImageSource"/>
+                    <TextBox x:Name="SpecificImageTextBox" Width="310" Margin="10,0,5,0" VerticalAlignment="Center" IsEnabled="False"
+                             ToolTip="Full path to a single image file to tag"/>
+                    <Button x:Name="BrowseImageButton" Content="Browse..." Width="60" IsEnabled="False" Click="BrowseImage_Click"/>
                 </StackPanel>
             </StackPanel>
         </GroupBox>
 
+        <!-- Options -->
+        <GroupBox Grid.Row="3" Header="Options" Margin="0,0,0,8" Padding="10">
+            <CheckBox x:Name="OnlyDbTagsCheckBox" Content="Only tags from database (validate LLM output against existing tags)" IsChecked="True"/>
+        </GroupBox>
+
         <!-- Progress -->
-        <GroupBox Grid.Row="3" Header="Progress" Margin="0,0,0,8" Padding="10">
+        <GroupBox Grid.Row="4" Header="Progress" Margin="0,0,0,8" Padding="10">
             <StackPanel>
                 <ProgressBar x:Name="ProgressBar" Height="18" Margin="0,0,0,5"/>
                 <TextBlock x:Name="ProgressLabel" Text="Ready" HorizontalAlignment="Center" Foreground="DarkBlue"/>
@@ -67,7 +79,7 @@
         </GroupBox>
 
         <!-- Log -->
-        <GroupBox Grid.Row="4" Header="Log" Margin="0,0,0,8" Padding="5">
+        <GroupBox Grid.Row="5" Header="Log" Margin="0,0,0,8" Padding="5">
             <ScrollViewer x:Name="LogScrollViewer" VerticalScrollBarVisibility="Auto">
                 <TextBox x:Name="LogTextBox" IsReadOnly="True" TextWrapping="Wrap"
                          Background="#1E1E1E" Foreground="#90EE90"
@@ -76,7 +88,7 @@
         </GroupBox>
 
         <!-- Buttons -->
-        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button x:Name="StartButton" Content="▶ Start Auto-Tagging" Click="Start_Click"
                     Width="150" Margin="0,0,10,0" FontWeight="Bold"/>
             <Button x:Name="CancelButton" Content="⏹ Cancel" Click="Cancel_Click"
