@@ -53,6 +53,7 @@ namespace FileTagger.Windows
     public partial class AutoTagWindow : Window
     {
         private const string AiTaggedUnchecked = "AI-Tagged-Unchecked";
+        private const string BasicPromt = "List sexual content and sexual activities tags for this image";
 
         private static readonly HashSet<string> ImageExtensions =
             new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp" };
@@ -341,7 +342,6 @@ namespace FileTagger.Windows
                 try
                 {
                     output = await InvokeLlama(llamaPath, modelPath, mmprojPath, imagePath, tagListString, token);
-                    throw new InvalidOperationException($"llama-cli exited with code {output}.");
                 }
                 catch (OperationCanceledException)
                 {
@@ -361,9 +361,9 @@ namespace FileTagger.Windows
                 }
 
                 var preview = output.Length > 250 ? output[..250] + "..." : output;
-                Log($"  Output: {preview}");
 
                 var parsedTokens = ParseTokens(output);
+
 
                 List<string> matchedTags;
                 if (onlyDbTags)
@@ -394,6 +394,10 @@ namespace FileTagger.Windows
                         continue;
                     }
                 }
+
+                // Log($"  Output: {string.Join(", ", matchedTags)}");
+
+                // throw new InvalidOperationException($"llama-cli exited with code");
 
                 // Determine which matched tags are new to this image
                 var existingFileTags = new HashSet<string>(
@@ -428,20 +432,21 @@ namespace FileTagger.Windows
         private static async Task<string> InvokeLlama(string llamaPath, string modelPath, string mmprojPath,
             string imagePath, string tagList, CancellationToken token)
         {
-            // tagList = "Anal, Angry, Anticipation, Ass, Ball gag, Blindfold, Bondage, Boobs, Boots, Boy, Buttplug, Choker, Cum, Demon, Dick, Dildo, Domination, Dominatrix, Elf, Fairy, Fantasy, Femboy, Femdom, Fishnets, Fucking, Furry, Futa, Ghotic, Girl, Humiliation, Leash, Lesbian, Nature, Neon, Pegging, Pole, Public, Slave, Strap-on, Tentacles";
-            // var prompt = $"List tags for this image from provided tag list: {tagList}";
-            // var prompt = "List explicit tags for this image";
-            var prompt = string.IsNullOrEmpty(tagList) ?
-             "List sexual content tags for this image" :
-              $"List tags for this image from provided tag list: {tagList}";
-            
-            // Escape double-quotes inside the prompt for the command line
+            var sysPrompt = "List sexual content tags for this image." +
+                            "Respond with ONLY a comma-separated list of tags, nothing else. " +
+                            "No sentences, no explanations, no preamble";
+
+            var prompt = string.IsNullOrEmpty(tagList)
+                ? BasicPromt
+                : $"List tags for this image. Only use tags from this list: {tagList}";
+
+            var escapedSys = sysPrompt.Replace("\"", "\\\"");
             var escapedPrompt = prompt.Replace("\"", "\\\"");
 
             var psi = new ProcessStartInfo
             {
                 FileName = llamaPath,
-                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" -p \"{escapedPrompt}\" --single-turn --simple-io",
+                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" -sys \"{escapedSys}\" -p \"{escapedPrompt}\" --single-turn --simple-io",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -479,13 +484,17 @@ namespace FileTagger.Windows
 
         private static List<string> ParseTokens(string output)
         {
-            // Split on commas and newlines, trim, strip trailing punctuation
-            var tagsMarker = output.IndexOf("tags:", StringComparison.OrdinalIgnoreCase);
-            var relevant = tagsMarker >= 0 ? output[(tagsMarker + 5)..] : output;
+            var idx = output.IndexOf(BasicPromt, StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+                output = output[(idx + BasicPromt.Length)..];
 
-            return relevant
+            var bracketIdx = output.IndexOf('[');
+            if (bracketIdx >= 0)
+                output = output[..bracketIdx];
+
+            return output
                 .Split(new[] { ',', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(t => t.Trim().TrimEnd('.', '!', '?', ';', ':'))
+                .Select(t => t.Trim().Trim('.', '!', '?', ';', ':'))
                 .Where(t => !string.IsNullOrWhiteSpace(t))
                 .ToList();
         }
