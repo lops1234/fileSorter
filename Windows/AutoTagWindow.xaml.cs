@@ -52,6 +52,8 @@ namespace FileTagger.Windows
 
     public partial class AutoTagWindow : Window
     {
+        private const string AiTaggedUnchecked = "AI-Tagged-Unchecked";
+
         private static readonly HashSet<string> ImageExtensions =
             new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp" };
 
@@ -98,7 +100,6 @@ namespace FileTagger.Windows
 
         private void BrowseLlama_Click(object sender, RoutedEventArgs e)
         {
-                        // TEMPORARY DEBUGGER TEST — remove after confirming breakpoints work
             var dlg = new OpenFileDialog
             {
                 Title = "Select llama-cli executable",
@@ -189,11 +190,17 @@ namespace FileTagger.Windows
                 return;
             }
 
-            // Collect image files
+            // Collect image files that have no tags or only the 'AI-Tagged-Unchecked' tag
             var imageFiles = targetDirs
                 .Where(Directory.Exists)
                 .SelectMany(d => Directory.GetFiles(d, "*", SearchOption.AllDirectories))
                 .Where(f => ImageExtensions.Contains(Path.GetExtension(f)))
+                .Where(f =>
+                {
+                    var tags = DatabaseManager.Instance.GetTagsForFile(f);
+                    return tags.Count == 0 ||
+                           tags.All(t => t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase));
+                })
                 .ToList();
 
             if (!imageFiles.Any())
@@ -223,7 +230,7 @@ namespace FileTagger.Windows
 
             try
             {
-                await Task.Run(() => RunAutoTagging(llamaPath, modelPath, mmprojPath, imageFiles, token), token);
+                await RunAutoTagging(llamaPath, modelPath, mmprojPath, imageFiles, token);
             }
             catch (OperationCanceledException)
             {
@@ -255,7 +262,7 @@ namespace FileTagger.Windows
 
         #region Core Auto-Tagging Logic
 
-        private void RunAutoTagging(string llamaPath, string modelPath, string mmprojPath,
+        private async Task RunAutoTagging(string llamaPath, string modelPath, string mmprojPath,
             List<string> imageFiles, CancellationToken token)
         {
             int processed = 0;
@@ -284,7 +291,7 @@ namespace FileTagger.Windows
                 string output;
                 try
                 {
-                    output = InvokeLlama(llamaPath, modelPath, mmprojPath, imagePath, tagListString, token);
+                    output = await InvokeLlama(llamaPath, modelPath, mmprojPath, imagePath, tagListString, token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -343,13 +350,16 @@ namespace FileTagger.Windows
                     Log($"  Added {newTags.Count} tag(s): {string.Join(", ", newTags)}");
                 }
 
+                // Mark image as AI-processed regardless of whether new tags were added
+                DatabaseManager.Instance.AddTagToFile(imagePath, AiTaggedUnchecked);
+
                 UpdateProgress(++processed, imageFiles.Count);
             }
 
             Log($"\n[DONE] Processed {processed} image(s), added {tagsAdded} tag association(s) in total.");
         }
 
-        private string InvokeLlama(string llamaPath, string modelPath, string mmprojPath,
+        private static async Task<string> InvokeLlama(string llamaPath, string modelPath, string mmprojPath,
             string imagePath, string tagList, CancellationToken token)
         {
             var prompt = $"List tags for this image from provided tag list: {tagList}";
@@ -359,7 +369,7 @@ namespace FileTagger.Windows
             var psi = new ProcessStartInfo
             {
                 FileName = llamaPath,
-                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" -p \"{escapedPrompt}\"",
+                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" -p \"{escapedPrompt}\" --single-turn --simple-io",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -376,10 +386,22 @@ namespace FileTagger.Windows
                 catch { }
             });
 
-            var stdout = process.StandardOutput.ReadToEnd();
-            process.WaitForExit();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(token);
+            var stderrTask = process.StandardError.ReadToEndAsync(token);
+
+            await Task.WhenAll(stdoutTask, stderrTask);
+            await process.WaitForExitAsync(token);
 
             token.ThrowIfCancellationRequested();
+
+            var stdout = stdoutTask.Result;
+            var stderr = stderrTask.Result;
+
+            if (!string.IsNullOrWhiteSpace(stderr))
+            {
+                Console.WriteLine("LLAMA STDERR:");
+                Console.WriteLine(stderr);
+            }
 
             return stdout;
         }
