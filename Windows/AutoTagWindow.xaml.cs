@@ -299,9 +299,8 @@ namespace FileTagger.Windows
                 }
                 catch (Exception ex)
                 {
-                    Log($"  [ERROR] llama-cli failed: {ex.Message}");
-                    UpdateProgress(++processed, imageFiles.Count);
-                    continue;
+                    Log($"\n[ERROR] llama-cli failed — stopping.\n{ex.Message}");
+                    throw;
                 }
 
                 if (string.IsNullOrWhiteSpace(output))
@@ -362,6 +361,7 @@ namespace FileTagger.Windows
         private static async Task<string> InvokeLlama(string llamaPath, string modelPath, string mmprojPath,
             string imagePath, string tagList, CancellationToken token)
         {
+            tagList = "Anal, Angry, Anticipation, Ass, Ball gag, Blindfold, Bondage, Boobs, Boots, Boy, Buttplug, Choker, Cum, Demon, Dick, Dildo, Domination, Dominatrix, Elf, Fairy, Fantasy, Femboy, Femdom, Fishnets, Fucking, Furry, Futa, Ghotic, Girl, Humiliation, Leash, Lesbian, Nature, Neon, Pegging, Pole, Public, Slave, Strap-on, Tentacles";
             var prompt = $"List tags for this image from provided tag list: {tagList}";
             // Escape double-quotes inside the prompt for the command line
             var escapedPrompt = prompt.Replace("\"", "\\\"");
@@ -398,10 +398,7 @@ namespace FileTagger.Windows
             var stderr = stderrTask.Result;
 
             if (!string.IsNullOrWhiteSpace(stderr))
-            {
-                Console.WriteLine("LLAMA STDERR:");
-                Console.WriteLine(stderr);
-            }
+                throw new InvalidOperationException($"llama-cli reported an error:\n{stderr}");
 
             return stdout;
         }
