@@ -395,7 +395,7 @@ namespace FileTagger.Windows
                     }
                 }
 
-                // Log($"  Output: {string.Join(", ", matchedTags)}");
+                Log($"  Tags: {string.Join(", ", matchedTags)}");
 
                 // throw new InvalidOperationException($"llama-cli exited with code");
 
