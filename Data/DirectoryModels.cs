@@ -68,4 +68,20 @@ namespace FileTagger.Data
         public virtual LocalFileRecord LocalFileRecord { get; set; } = null!;
         public virtual LocalTag LocalTag { get; set; } = null!;
     }
+
+    /// <summary>
+    /// Records tag names that were deleted, propagated into the folder database during push
+    /// so that other devices know to remove those tags on their next pull.
+    /// </summary>
+    public class LocalDeletedTag
+    {
+        [Key]
+        public int Id { get; set; }
+
+        [Required]
+        [MaxLength(100)]
+        public string Name { get; set; } = string.Empty;
+
+        public DateTime DeletedAt { get; set; } = DateTime.UtcNow;
+    }
 }

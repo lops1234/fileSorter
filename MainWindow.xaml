@@ -77,7 +77,11 @@
                             <Button x:Name="PullFromFolderButton" Content="📥 Pull from Folder" Click="PullFromFolder_Click" Margin="5,2,5,2" 
                                     ToolTip="Import tags from folder database into central database"/>
                             <Button x:Name="PushToFolderButton" Content="📤 Push to Folder" Click="PushToFolder_Click" Margin="5,2,5,2" 
-                                    ToolTip="Export tags to folder database for backup/sync"/>
+                                    ToolTip="Pull remote changes, then export local tags to the folder database (deleted tags are propagated)"/>
+                            <Button x:Name="CleanupRemoteDeletedTagsButton" Content="🗑️ Clean Remote Deleted Tags" Click="CleanupRemoteDeletedTags_Click" Margin="5,2,5,2"
+                                    ToolTip="Remove the deleted-tags history from the selected folder's remote database"/>
+                            <Button x:Name="ManageDeletedTagsButton" Content="📋 Deleted Tags" Click="ManageDeletedTags_Click" Margin="5,2,5,2"
+                                    ToolTip="View, restore or permanently discard locally deleted tags"/>
                             <Button x:Name="CleanupFolderButton" Content="🧹 Cleanup Folder" Click="CleanupFolder_Click" Margin="5,2,5,2" 
                                     ToolTip="Pull all data, delete folder databases, push clean copy"/>
                             

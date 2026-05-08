@@ -14,6 +14,7 @@ namespace FileTagger.Data
         public DbSet<LocalFileRecord> LocalFileRecords { get; set; }
         public DbSet<LocalTag> LocalTags { get; set; }
         public DbSet<LocalFileTag> LocalFileTags { get; set; }
+        public DbSet<LocalDeletedTag> LocalDeletedTags { get; set; }
 
         public DirectoryDbContext(string directoryPath)
         {
@@ -59,6 +60,11 @@ namespace FileTagger.Data
             // Ensure unique file-tag combinations
             modelBuilder.Entity<LocalFileTag>()
                 .HasIndex(lft => new { lft.LocalFileRecordId, lft.LocalTagId })
+                .IsUnique();
+
+            // Unique tag names in deleted-tags list
+            modelBuilder.Entity<LocalDeletedTag>()
+                .HasIndex(dt => dt.Name)
                 .IsUnique();
         }
     }

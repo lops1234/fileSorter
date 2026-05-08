@@ -107,5 +107,50 @@ namespace FileTagger.Data
         public virtual CentralFileRecord FileRecord { get; set; } = null!;
         public virtual CentralTag Tag { get; set; } = null!;
     }
+
+    /// <summary>
+    /// Records a tag that was deleted locally, so the deletion can be propagated on next push
+    /// and the tag can optionally be restored.
+    /// </summary>
+    public class CentralDeletedTag
+    {
+        [Key]
+        public int Id { get; set; }
+
+        [Required]
+        [MaxLength(100)]
+        public string Name { get; set; } = string.Empty;
+
+        [MaxLength(500)]
+        public string Description { get; set; } = string.Empty;
+
+        [ForeignKey(nameof(Directory))]
+        public int DirectoryId { get; set; }
+
+        public DateTime DeletedAt { get; set; } = DateTime.UtcNow;
+
+        // Navigation properties
+        public virtual CentralDirectory Directory { get; set; } = null!;
+        public virtual ICollection<CentralDeletedTagFile> DeletedTagFiles { get; set; } = new List<CentralDeletedTagFile>();
+    }
+
+    /// <summary>
+    /// Stores the relative paths of files that were associated with a deleted tag,
+    /// enabling restoration of the tag with its original file associations.
+    /// </summary>
+    public class CentralDeletedTagFile
+    {
+        [Key]
+        public int Id { get; set; }
+
+        [ForeignKey(nameof(DeletedTag))]
+        public int DeletedTagId { get; set; }
+
+        [Required]
+        public string RelativePath { get; set; } = string.Empty;
+
+        // Navigation property
+        public virtual CentralDeletedTag DeletedTag { get; set; } = null!;
+    }
 }
 

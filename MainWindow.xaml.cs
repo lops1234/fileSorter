@@ -629,6 +629,47 @@ namespace FileTagger
             }
         }
 
+        private void CleanupRemoteDeletedTags_Click(object sender, RoutedEventArgs e)
+        {
+            if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
+            {
+                MessageBox.Show("Please select a directory first.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var confirm = MessageBox.Show(
+                    $"Remove the deleted-tags history from the remote folder database?\n\n" +
+                    $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
+                    $"This only clears the remote history list — it does not affect your local tags.",
+                    "Clean Remote Deleted Tags",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (confirm == MessageBoxResult.Yes)
+                {
+                    DatabaseManager.Instance.CleanupRemoteDeletedTags(selectedViewModel.DirectoryPath);
+                    MessageBox.Show("Remote deleted-tags history cleared.", "Done",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ManageDeletedTags_Click(object sender, RoutedEventArgs e)
+        {
+            var window = new FileTagger.Windows.DeletedTagsWindow();
+            window.Owner = this;
+            window.ShowDialog();
+            // Reload UI in case the user restored a tag
+            LoadTags();
+            LoadTagFilter();
+        }
+
         private void CleanupFolder_Click(object sender, RoutedEventArgs e)
         {
             if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)

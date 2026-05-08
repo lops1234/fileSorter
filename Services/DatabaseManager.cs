@@ -52,8 +52,36 @@ namespace FileTagger.Services
                 centralDb.Database.EnsureCreated();
             }
 
+            // Add tables introduced after the initial schema (safe no-ops on a fresh DB)
+            EnsureSchemaUpToDate();
+
             // Check if this is first run with old data - migrate if needed
             MigrateFromOldDatabaseStructure();
+        }
+
+        /// <summary>
+        /// Creates any tables that were added after the initial EnsureCreated() call.
+        /// Uses IF NOT EXISTS so this is always safe to run.
+        /// </summary>
+        private void EnsureSchemaUpToDate()
+        {
+            using var db = new CentralDbContext();
+            db.Database.ExecuteSqlRaw(@"
+                CREATE TABLE IF NOT EXISTS DeletedTags (
+                    Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Name        TEXT    NOT NULL,
+                    Description TEXT    NOT NULL DEFAULT '',
+                    DirectoryId INTEGER NOT NULL,
+                    DeletedAt   TEXT    NOT NULL,
+                    FOREIGN KEY (DirectoryId) REFERENCES Directories(Id) ON DELETE CASCADE
+                )");
+            db.Database.ExecuteSqlRaw(@"
+                CREATE TABLE IF NOT EXISTS DeletedTagFiles (
+                    Id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    DeletedTagId INTEGER NOT NULL,
+                    RelativePath TEXT    NOT NULL,
+                    FOREIGN KEY (DeletedTagId) REFERENCES DeletedTags(Id) ON DELETE CASCADE
+                )");
         }
 
         /// <summary>
@@ -204,7 +232,12 @@ namespace FileTagger.Services
         /// <summary>
         /// Pull all data from folder databases into the central database
         /// </summary>
-        public PullResult PullFromFolder(string directoryPath)
+        /// <param name="skipBootstrap">
+        /// When true, skips the "no remote DB → push" bootstrap step.
+        /// Used by PushToFolder to pull remote changes before building the new remote DB
+        /// without triggering an infinite push→pull→push recursion.
+        /// </param>
+        public PullResult PullFromFolder(string directoryPath, bool skipBootstrap = false)
         {
             var result = new PullResult { DirectoryPath = directoryPath };
 
@@ -246,7 +279,7 @@ namespace FileTagger.Services
                 }
 
                 // No folder database exists at all — bootstrap one by pushing central data to the folder.
-                if (result.DatabasesFound == 0)
+                if (result.DatabasesFound == 0 && !skipBootstrap)
                 {
                     var pushResult = PushToFolder(directoryPath);
                     result.WasBootstrapped = true;
@@ -288,6 +321,12 @@ namespace FileTagger.Services
             {
                 using var centralDb = new CentralDbContext();
 
+                // Pull remote changes first so we don't overwrite work done on other machines.
+                // skipBootstrap = true prevents recursion when there is no remote DB yet.
+                var syncPull = PullFromFolder(directoryPath, skipBootstrap: true);
+                if (syncPull.Errors.Any())
+                    result.Errors.AddRange(syncPull.Errors.Select(e => $"[pre-push pull] {e}"));
+
                 // Load directory, tags, file records, and file-tag associations in separate
                 // queries.  A single query with Include(Tags).Include(FileRecords).ThenInclude(FileTags)
                 // produces a cartesian JOIN (Tags × FileRecords × FileTags) that can return
@@ -301,6 +340,13 @@ namespace FileTagger.Services
                     return result;
                 }
 
+                // Deleted-tag names for this directory — excluded from the push and written
+                // to the remote DB's LocalDeletedTags table so other machines apply them on pull.
+                var localDeletedTagNames = centralDb.DeletedTags
+                    .Where(dt => dt.DirectoryId == centralDir.Id)
+                    .Select(dt => dt.Name)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
                 var centralTags = centralDb.Tags
                     .Where(t => t.DirectoryId == centralDir.Id)
                     .ToList();
@@ -311,6 +357,12 @@ namespace FileTagger.Services
 
                 var centralFileTagList = centralDb.FileTags
                     .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
+                    .ToList();
+
+                // Collect deleted-tag entries (name + timestamp) to write to remote
+                var deletedTagsToPropagate = centralDb.DeletedTags
+                    .Where(dt => dt.DirectoryId == centralDir.Id)
+                    .Select(dt => new { dt.Name, dt.DeletedAt })
                     .ToList();
 
                 // All SQLite work happens in a local temp directory to avoid virtual filesystem
@@ -326,12 +378,15 @@ namespace FileTagger.Services
                     folderDb.Database.ExecuteSqlRaw("PRAGMA journal_mode=DELETE");
                     folderDb.Database.EnsureCreated();
 
-                    // Export tags
+                    // Export tags — skip any that are in the local deleted-tags list
                     var existingTags = folderDb.LocalTags.ToList();
                     var tagMapping = new Dictionary<int, int>(); // central ID -> local ID
 
                     foreach (var centralTag in centralTags)
                     {
+                        if (localDeletedTagNames.Contains(centralTag.Name))
+                            continue; // this tag was deleted locally; don't push it
+
                         var localTag = existingTags.FirstOrDefault(t =>
                             string.Equals(t.Name, centralTag.Name, StringComparison.OrdinalIgnoreCase));
 
@@ -360,6 +415,16 @@ namespace FileTagger.Services
                         }
 
                         tagMapping[centralTag.Id] = localTag.Id;
+                    }
+
+                    // Write deleted-tag names to remote so other machines apply them on pull
+                    var existingDeleted = folderDb.LocalDeletedTags
+                        .Select(dt => dt.Name)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    foreach (var del in deletedTagsToPropagate)
+                    {
+                        if (!existingDeleted.Contains(del.Name))
+                            folderDb.LocalDeletedTags.Add(new LocalDeletedTag { Name = del.Name, DeletedAt = del.DeletedAt });
                     }
 
                     // Export file records
@@ -399,7 +464,7 @@ namespace FileTagger.Services
                         fileMapping[centralFile.Id] = localFile.Id;
                     }
 
-                    // Export file-tag associations
+                    // Export file-tag associations (only for tags that were actually exported)
                     var existingAssociations = folderDb.LocalFileTags.ToList()
                         .Select(ft => (ft.LocalFileRecordId, ft.LocalTagId))
                         .ToHashSet();
@@ -408,7 +473,7 @@ namespace FileTagger.Services
                     {
                         if (!fileMapping.ContainsKey(centralFileTag.FileRecordId) ||
                             !tagMapping.ContainsKey(centralFileTag.TagId))
-                            continue;
+                            continue; // tag was deleted — association skipped automatically
 
                         var localFileId = fileMapping[centralFileTag.FileRecordId];
                         var localTagId = tagMapping[centralFileTag.TagId];
@@ -437,6 +502,11 @@ namespace FileTagger.Services
                 File.Copy(tempDbPath, targetDbPath, overwrite: true);
 
                 centralDir.LastSyncAt = DateTime.UtcNow;
+
+                // Deleted tags have been propagated to remote — clear the local records for this dir
+                var propagated = centralDb.DeletedTags.Where(dt => dt.DirectoryId == centralDir.Id).ToList();
+                centralDb.DeletedTags.RemoveRange(propagated);
+
                 centralDb.SaveChanges();
 
                 result.Success = true;
@@ -815,7 +885,8 @@ namespace FileTagger.Services
         }
 
         /// <summary>
-        /// Delete a tag from all directories
+        /// Delete a tag from all directories, recording the deletion (with file associations)
+        /// in CentralDeletedTag so it can be propagated on the next push and optionally restored.
         /// </summary>
         public void DeleteTag(string tagName)
         {
@@ -823,15 +894,161 @@ namespace FileTagger.Services
 
             var tagsToDelete = centralDb.Tags
                 .Include(t => t.FileTags)
+                    .ThenInclude(ft => ft.FileRecord)
                 .Where(t => t.Name.ToLower() == tagName.ToLower())
                 .ToList();
 
             foreach (var tag in tagsToDelete)
             {
+                // Snapshot the tag and its file associations before deleting
+                var deletedTag = new CentralDeletedTag
+                {
+                    Name        = tag.Name,
+                    Description = tag.Description,
+                    DirectoryId = tag.DirectoryId,
+                    DeletedAt   = DateTime.UtcNow
+                };
+                foreach (var ft in tag.FileTags)
+                    deletedTag.DeletedTagFiles.Add(new CentralDeletedTagFile { RelativePath = ft.FileRecord.RelativePath });
+
+                centralDb.DeletedTags.Add(deletedTag);
                 centralDb.Tags.Remove(tag);
             }
 
             centralDb.SaveChanges();
+        }
+
+        // ── Deleted-tag helpers ──────────────────────────────────────────────
+
+        public class DeletedTagInfo
+        {
+            public int            Id            { get; set; }
+            public string         Name          { get; set; } = string.Empty;
+            public string         Description   { get; set; } = string.Empty;
+            public string         DirectoryPath { get; set; } = string.Empty;
+            public DateTime       DeletedAt     { get; set; }
+            public List<string>   FilePaths     { get; set; } = new();
+        }
+
+        /// <summary>Returns all locally-recorded deleted tags with their original file paths.</summary>
+        public List<DeletedTagInfo> GetDeletedTags()
+        {
+            using var db = new CentralDbContext();
+            return db.DeletedTags
+                .Include(dt => dt.Directory)
+                .Include(dt => dt.DeletedTagFiles)
+                .OrderBy(dt => dt.DirectoryId).ThenBy(dt => dt.Name)
+                .AsEnumerable()
+                .Select(dt => new DeletedTagInfo
+                {
+                    Id            = dt.Id,
+                    Name          = dt.Name,
+                    Description   = dt.Description,
+                    DirectoryPath = dt.Directory.DirectoryPath,
+                    DeletedAt     = dt.DeletedAt,
+                    FilePaths     = dt.DeletedTagFiles
+                                      .Select(f => Path.Combine(dt.Directory.DirectoryPath, f.RelativePath))
+                                      .ToList()
+                })
+                .ToList();
+        }
+
+        /// <summary>
+        /// Restores a deleted tag: re-creates the CentralTag and its original file associations,
+        /// then removes the CentralDeletedTag record.
+        /// </summary>
+        public void RestoreDeletedTag(int deletedTagId)
+        {
+            using var db = new CentralDbContext();
+
+            var deleted = db.DeletedTags
+                .Include(dt => dt.DeletedTagFiles)
+                .FirstOrDefault(dt => dt.Id == deletedTagId);
+            if (deleted == null) return;
+
+            var tag = db.Tags.FirstOrDefault(t =>
+                t.DirectoryId == deleted.DirectoryId &&
+                t.Name == deleted.Name);
+
+            if (tag == null)
+            {
+                tag = new CentralTag
+                {
+                    Name        = deleted.Name,
+                    Description = deleted.Description,
+                    DirectoryId = deleted.DirectoryId,
+                    CreatedAt   = DateTime.UtcNow,
+                    LastUsedAt  = DateTime.UtcNow
+                };
+                db.Tags.Add(tag);
+                db.SaveChanges();
+            }
+
+            var existingAssocIds = db.FileTags
+                .Where(ft => ft.TagId == tag.Id)
+                .Select(ft => ft.FileRecordId)
+                .ToHashSet();
+
+            foreach (var dtf in deleted.DeletedTagFiles)
+            {
+                var fileRecord = db.FileRecords.FirstOrDefault(f =>
+                    f.DirectoryId == deleted.DirectoryId && f.RelativePath == dtf.RelativePath);
+                if (fileRecord != null && !existingAssocIds.Contains(fileRecord.Id))
+                {
+                    db.FileTags.Add(new CentralFileTag
+                    {
+                        FileRecordId = fileRecord.Id,
+                        TagId        = tag.Id,
+                        CreatedAt    = DateTime.UtcNow
+                    });
+                    existingAssocIds.Add(fileRecord.Id);
+                }
+            }
+
+            db.DeletedTags.Remove(deleted);
+            db.SaveChanges();
+        }
+
+        /// <summary>Removes all local CentralDeletedTag records (and their file snapshots).</summary>
+        public void CleanupLocalDeletedTags()
+        {
+            using var db = new CentralDbContext();
+            db.DeletedTags.RemoveRange(db.DeletedTags);
+            db.SaveChanges();
+        }
+
+        /// <summary>
+        /// Removes the LocalDeletedTags table contents from the remote folder database.
+        /// Does not touch the local central DB.
+        /// </summary>
+        public void CleanupRemoteDeletedTags(string directoryPath)
+        {
+            var dbPath = Path.Combine(directoryPath, ".filetagger", "tags.db");
+            if (!File.Exists(dbPath)) return;
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "FileTagger_CleanDel_" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(tempDir);
+                var tempDbPath = Path.Combine(tempDir, ".filetagger", "tags.db");
+                Directory.CreateDirectory(Path.GetDirectoryName(tempDbPath)!);
+                File.Copy(dbPath, tempDbPath);
+
+                using (var conn = new SqliteConnection($"Data Source={tempDbPath};Pooling=False"))
+                {
+                    conn.Open();
+                    using var cmd = conn.CreateCommand();
+                    cmd.CommandText = "DELETE FROM LocalDeletedTags";
+                    try { cmd.ExecuteNonQuery(); } catch { /* table might not exist */ }
+                }
+                SqliteConnection.ClearAllPools();
+
+                File.Copy(tempDbPath, dbPath, overwrite: true);
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
         }
 
         #endregion
@@ -1420,6 +1637,8 @@ namespace FileTagger.Services
 
             List<LocalTag> localTags;
             List<LocalFileRecord> localFiles;
+            // Tag names recorded as deleted in the remote DB
+            var remoteDeletedTagNames = new List<(string Name, DateTime DeletedAt)>();
 
             // Read data using a direct SQLite connection to avoid connection pooling issues
             var connectionString = $"Data Source={dbPath};Mode=ReadOnly;Pooling=False";
@@ -1428,10 +1647,26 @@ namespace FileTagger.Services
             using (var connection = new SqliteConnection(connectionString))
             {
                 connection.Open();
-                
-                var options = new DbContextOptionsBuilder<DirectoryDbContext>()
-                    .UseSqlite(connection)
-                    .Options;
+
+                // Read remote-deleted tags (table may not exist in older DBs — handle gracefully)
+                try
+                {
+                    var checkCmd = connection.CreateCommand();
+                    checkCmd.CommandText = "SELECT 1 FROM sqlite_master WHERE type='table' AND name='LocalDeletedTags'";
+                    if (checkCmd.ExecuteScalar() != null)
+                    {
+                        var cmd = connection.CreateCommand();
+                        cmd.CommandText = "SELECT Name, DeletedAt FROM LocalDeletedTags";
+                        using var reader = cmd.ExecuteReader();
+                        while (reader.Read())
+                        {
+                            var name = reader.GetString(0);
+                            var deletedAt = reader.IsDBNull(1) ? DateTime.UtcNow : DateTime.Parse(reader.GetString(1));
+                            remoteDeletedTagNames.Add((name, deletedAt));
+                        }
+                    }
+                }
+                catch { /* older DB without the table — ignore */ }
 
                 using (var folderDb = new DirectoryDbContext(centralDir.DirectoryPath))
                 {
@@ -1451,7 +1686,57 @@ namespace FileTagger.Services
             // Clear the connection from pool immediately
             SqliteConnection.ClearPool(new SqliteConnection(connectionString));
 
-            // Import tags
+            // ── Apply remote deletions ──────────────────────────────────────
+            // If the remote DB says a tag was deleted, remove it from local central DB
+            // and record it in local CentralDeletedTag (so it propagates on next push).
+            var localDeletedNames = centralDb.DeletedTags
+                .Where(dt => dt.DirectoryId == centralDir.Id)
+                .Select(dt => dt.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (remoteName, remoteDeletedAt) in remoteDeletedTagNames)
+            {
+                // Delete the active tag locally if it exists
+                var activeTag = centralDb.Tags
+                    .Include(t => t.FileTags).ThenInclude(ft => ft.FileRecord)
+                    .FirstOrDefault(t => t.DirectoryId == centralDir.Id &&
+                                        t.Name.ToLower() == remoteName.ToLower());
+                if (activeTag != null)
+                {
+                    // Record the deletion with file snapshots before removing
+                    if (!localDeletedNames.Contains(activeTag.Name))
+                    {
+                        var deletedEntry = new CentralDeletedTag
+                        {
+                            Name        = activeTag.Name,
+                            Description = activeTag.Description,
+                            DirectoryId = centralDir.Id,
+                            DeletedAt   = remoteDeletedAt
+                        };
+                        foreach (var ft in activeTag.FileTags)
+                            deletedEntry.DeletedTagFiles.Add(new CentralDeletedTagFile { RelativePath = ft.FileRecord.RelativePath });
+                        centralDb.DeletedTags.Add(deletedEntry);
+                        localDeletedNames.Add(activeTag.Name);
+                    }
+                    centralDb.Tags.Remove(activeTag);
+                }
+                else if (!localDeletedNames.Contains(remoteName))
+                {
+                    // Tag doesn't exist locally but the remote says it was deleted — record it
+                    centralDb.DeletedTags.Add(new CentralDeletedTag
+                    {
+                        Name        = remoteName,
+                        Description = string.Empty,
+                        DirectoryId = centralDir.Id,
+                        DeletedAt   = remoteDeletedAt
+                    });
+                    localDeletedNames.Add(remoteName);
+                }
+            }
+            if (remoteDeletedTagNames.Count > 0)
+                centralDb.SaveChanges();
+
+            // Import tags — skip any that are in the local deleted-tags list
             var existingTags = centralDb.Tags
                 .Where(t => t.DirectoryId == centralDir.Id)
                 .ToList();
@@ -1459,6 +1744,10 @@ namespace FileTagger.Services
 
             foreach (var localTag in localTags)
             {
+                // Don't re-import a tag we've already deleted locally
+                if (localDeletedNames.Contains(localTag.Name))
+                    continue;
+
                 var existingTag = existingTags.FirstOrDefault(t =>
                     string.Equals(t.Name, localTag.Name, StringComparison.OrdinalIgnoreCase));
 
