@@ -245,6 +245,17 @@ namespace FileTagger.Services
                     }
                 }
 
+                // No folder database exists at all — bootstrap one by pushing central data to the folder.
+                if (result.DatabasesFound == 0)
+                {
+                    var pushResult = PushToFolder(directoryPath);
+                    result.WasBootstrapped = true;
+                    result.BootstrapTagsExported = pushResult.TagsExported;
+                    result.BootstrapFilesExported = pushResult.FilesExported;
+                    if (pushResult.Errors.Any())
+                        result.Errors.AddRange(pushResult.Errors);
+                }
+
                 centralDir.LastSyncAt = DateTime.UtcNow;
                 centralDb.SaveChanges();
                 result.Success = result.Errors.Count == 0;
@@ -263,11 +274,15 @@ namespace FileTagger.Services
         }
 
         /// <summary>
-        /// Push data from central database to a folder database
+        /// Push data from central database to a folder database.
+        /// Writes to a local temp directory first, then copies to the target path.
+        /// This avoids SQLITE_FULL (Error 13) on virtual filesystems like Google Drive GVFS,
+        /// which cannot handle SQLite journal/WAL files.
         /// </summary>
         public PushResult PushToFolder(string directoryPath)
         {
             var result = new PushResult { DirectoryPath = directoryPath };
+            var tempDir = Path.Combine(Path.GetTempPath(), "FileTagger_Push_" + Guid.NewGuid().ToString("N"));
 
             try
             {
@@ -285,15 +300,10 @@ namespace FileTagger.Services
                     return result;
                 }
 
-                // Create .filetagger directory if needed
-                var fileTaggerDir = Path.Combine(directoryPath, ".filetagger");
-                if (!Directory.Exists(fileTaggerDir))
-                {
-                    Directory.CreateDirectory(fileTaggerDir);
-                }
-
-                // Create/update the folder database
-                using var folderDb = new DirectoryDbContext(directoryPath);
+                // All SQLite work happens in a local temp directory to avoid virtual filesystem
+                // issues (e.g. Google Drive GVFS causing SQLITE_FULL on journal file creation).
+                Directory.CreateDirectory(tempDir);
+                using var folderDb = new DirectoryDbContext(tempDir);
                 folderDb.Database.EnsureCreated();
 
                 // Export tags
@@ -399,6 +409,21 @@ namespace FileTagger.Services
                 }
 
                 folderDb.SaveChanges();
+
+                // SQLite operations succeeded on the local temp file.
+                // Now copy it to the real destination (which may be Google Drive or another
+                // virtual filesystem that can't handle SQLite journal files during writes).
+                folderDb.Database.CloseConnection();
+                SqliteConnection.ClearAllPools();
+
+                var targetFileTaggerDir = Path.Combine(directoryPath, ".filetagger");
+                if (!Directory.Exists(targetFileTaggerDir))
+                    Directory.CreateDirectory(targetFileTaggerDir);
+
+                var tempDbPath = Path.Combine(tempDir, ".filetagger", "tags.db");
+                var targetDbPath = Path.Combine(targetFileTaggerDir, "tags.db");
+                File.Copy(tempDbPath, targetDbPath, overwrite: true);
+
                 centralDir.LastSyncAt = DateTime.UtcNow;
                 centralDb.SaveChanges();
 
@@ -407,6 +432,13 @@ namespace FileTagger.Services
             catch (Exception ex)
             {
                 result.Errors.Add($"Push failed: {ex.Message}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
             }
 
             return result;
@@ -528,10 +560,15 @@ namespace FileTagger.Services
             var relativePath = Path.GetRelativePath(watchedDir, filePath);
             var fileName = Path.GetFileName(filePath);
 
-            // Get or create file record
+            // Get or create file record.
+            // Plain == (exact match) is intentional: Path.GetRelativePath always returns the same
+            // casing for the same physical file within a run, so exact equality is correct and
+            // efficient (hits the SQL index).  Avoid lower()/ToLower() — SQLite's lower() is
+            // ASCII-only and silently mismatches paths with non-ASCII chars, which causes a
+            // second INSERT attempt and a UNIQUE constraint violation.
             var fileRecord = centralDb.FileRecords.FirstOrDefault(f =>
                 f.DirectoryId == centralDir.Id &&
-                f.RelativePath.ToLower() == relativePath.ToLower());
+                f.RelativePath == relativePath);
 
             if (fileRecord == null)
             {
@@ -607,7 +644,7 @@ namespace FileTagger.Services
 
             var fileRecord = centralDb.FileRecords.FirstOrDefault(f =>
                 f.DirectoryId == centralDir.Id &&
-                f.RelativePath.ToLower() == relativePath.ToLower());
+                f.RelativePath == relativePath);
 
             if (fileRecord == null)
                 return;
@@ -980,7 +1017,7 @@ namespace FileTagger.Services
                     .ThenInclude(ft => ft.Tag)
                 .FirstOrDefault(f =>
                     f.DirectoryId == centralDir.Id &&
-                    f.RelativePath.ToLower() == relativePath.ToLower());
+                    f.RelativePath == relativePath);
 
             if (fileRecord == null)
                 return new List<string>();
@@ -1559,6 +1596,9 @@ namespace FileTagger.Services
         public int TagsImported { get; set; }
         public int FilesImported { get; set; }
         public int AssociationsImported { get; set; }
+        public bool WasBootstrapped { get; set; }
+        public int BootstrapTagsExported { get; set; }
+        public int BootstrapFilesExported { get; set; }
         public List<string> Errors { get; set; } = new List<string>();
     }
 

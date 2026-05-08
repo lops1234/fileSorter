@@ -547,12 +547,22 @@ namespace FileTagger
                 {
                     var pullResult = DatabaseManager.Instance.PullFromFolder(selectedViewModel.DirectoryPath);
 
-                    var message = $"Pull completed!\n\n" +
-                                 $"Databases found: {pullResult.DatabasesFound}\n" +
-                                 $"Databases pulled: {pullResult.DatabasesPulled}\n" +
-                                 $"Tags imported: {pullResult.TagsImported}\n" +
-                                 $"Files imported: {pullResult.FilesImported}\n" +
-                                 $"Associations imported: {pullResult.AssociationsImported}";
+                    string message;
+                    if (pullResult.WasBootstrapped)
+                    {
+                        message = $"No folder database found — created one from central data.\n\n" +
+                                  $"Tags exported: {pullResult.BootstrapTagsExported}\n" +
+                                  $"Files exported: {pullResult.BootstrapFilesExported}";
+                    }
+                    else
+                    {
+                        message = $"Pull completed!\n\n" +
+                                  $"Databases found: {pullResult.DatabasesFound}\n" +
+                                  $"Databases pulled: {pullResult.DatabasesPulled}\n" +
+                                  $"Tags imported: {pullResult.TagsImported}\n" +
+                                  $"Files imported: {pullResult.FilesImported}\n" +
+                                  $"Associations imported: {pullResult.AssociationsImported}";
+                    }
 
                     if (pullResult.Errors.Any())
                     {

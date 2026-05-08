@@ -257,6 +257,7 @@ namespace FileTagger.Windows
                         MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
+
             }
 
             // Prepare UI
