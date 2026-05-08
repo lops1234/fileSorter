@@ -288,11 +288,12 @@ namespace FileTagger.Services
             {
                 using var centralDb = new CentralDbContext();
 
+                // Load directory, tags, file records, and file-tag associations in separate
+                // queries.  A single query with Include(Tags).Include(FileRecords).ThenInclude(FileTags)
+                // produces a cartesian JOIN (Tags × FileRecords × FileTags) that can return
+                // millions of rows for large directories and triggers the SQLite error.
                 var centralDir = centralDb.Directories
-                    .Include(d => d.Tags)
-                    .Include(d => d.FileRecords)
-                        .ThenInclude(f => f.FileTags)
-                    .FirstOrDefault(d => d.DirectoryPath.ToLower() == directoryPath.ToLower());
+                    .FirstOrDefault(d => d.DirectoryPath == directoryPath);
 
                 if (centralDir == null)
                 {
@@ -300,127 +301,138 @@ namespace FileTagger.Services
                     return result;
                 }
 
-                // All SQLite work happens in a local temp directory to avoid virtual filesystem
-                // issues (e.g. Google Drive GVFS causing SQLITE_FULL on journal file creation).
-                Directory.CreateDirectory(tempDir);
-                using var folderDb = new DirectoryDbContext(tempDir);
-                folderDb.Database.EnsureCreated();
+                var centralTags = centralDb.Tags
+                    .Where(t => t.DirectoryId == centralDir.Id)
+                    .ToList();
 
-                // Export tags
-                var existingTags = folderDb.LocalTags.ToList();
-                var tagMapping = new Dictionary<int, int>(); // central ID -> local ID
+                var centralFiles = centralDb.FileRecords
+                    .Where(f => f.DirectoryId == centralDir.Id)
+                    .ToList();
 
-                foreach (var centralTag in centralDir.Tags)
-                {
-                    var localTag = existingTags.FirstOrDefault(t =>
-                        string.Equals(t.Name, centralTag.Name, StringComparison.OrdinalIgnoreCase));
-
-                    if (localTag == null)
-                    {
-                        localTag = new LocalTag
-                        {
-                            Name = centralTag.Name,
-                            Description = centralTag.Description,
-                            CreatedAt = centralTag.CreatedAt,
-                            LastUsedAt = centralTag.LastUsedAt
-                        };
-                        folderDb.LocalTags.Add(localTag);
-                        folderDb.SaveChanges();
-                        existingTags.Add(localTag);
-                        result.TagsExported++;
-                    }
-                    else
-                    {
-                        // Update if central is newer
-                        if (centralTag.LastUsedAt > localTag.LastUsedAt)
-                        {
-                            localTag.LastUsedAt = centralTag.LastUsedAt;
-                            localTag.Description = centralTag.Description;
-                        }
-                    }
-
-                    tagMapping[centralTag.Id] = localTag.Id;
-                }
-
-                // Export file records
-                var existingFiles = folderDb.LocalFileRecords.ToList();
-                var fileMapping = new Dictionary<int, int>(); // central ID -> local ID
-
-                foreach (var centralFile in centralDir.FileRecords)
-                {
-                    var localFile = existingFiles.FirstOrDefault(f =>
-                        string.Equals(f.RelativePath, centralFile.RelativePath, StringComparison.OrdinalIgnoreCase));
-
-                    if (localFile == null)
-                    {
-                        localFile = new LocalFileRecord
-                        {
-                            FileName = centralFile.FileName,
-                            RelativePath = centralFile.RelativePath,
-                            LastModified = centralFile.LastModified,
-                            FileSize = centralFile.FileSize,
-                            CreatedAt = centralFile.CreatedAt
-                        };
-                        folderDb.LocalFileRecords.Add(localFile);
-                        folderDb.SaveChanges();
-                        existingFiles.Add(localFile);
-                        result.FilesExported++;
-            }
-            else
-            {
-                        // Update if central is newer
-                        if (centralFile.LastModified > localFile.LastModified)
-                        {
-                            localFile.LastModified = centralFile.LastModified;
-                            localFile.FileSize = centralFile.FileSize;
-                        }
-                    }
-
-                    fileMapping[centralFile.Id] = localFile.Id;
-                }
-
-                // Export file-tag associations
-                var existingAssociations = folderDb.LocalFileTags.ToList()
-                    .Select(ft => (ft.LocalFileRecordId, ft.LocalTagId))
-                    .ToHashSet();
-
-                var centralFileTags = centralDb.FileTags
+                var centralFileTagList = centralDb.FileTags
                     .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
                     .ToList();
 
-                foreach (var centralFileTag in centralFileTags)
+                // All SQLite work happens in a local temp directory to avoid virtual filesystem
+                // issues (e.g. Google Drive GVFS causing SQLITE_FULL on journal file creation).
+                Directory.CreateDirectory(tempDir);
+                var tempDbPath = Path.Combine(tempDir, ".filetagger", "tags.db");
+
+                using (var folderDb = new DirectoryDbContext(tempDir))
                 {
-                    if (!fileMapping.ContainsKey(centralFileTag.FileRecordId) ||
-                        !tagMapping.ContainsKey(centralFileTag.TagId))
-                        continue;
+                    folderDb.Database.OpenConnection();
+                    // DELETE journal mode: no WAL/SHM side-files are created, so the resulting
+                    // .db file is completely self-contained and safe to File.Copy anywhere.
+                    folderDb.Database.ExecuteSqlRaw("PRAGMA journal_mode=DELETE");
+                    folderDb.Database.EnsureCreated();
 
-                    var localFileId = fileMapping[centralFileTag.FileRecordId];
-                    var localTagId = tagMapping[centralFileTag.TagId];
+                    // Export tags
+                    var existingTags = folderDb.LocalTags.ToList();
+                    var tagMapping = new Dictionary<int, int>(); // central ID -> local ID
 
-                    if (!existingAssociations.Contains((localFileId, localTagId)))
+                    foreach (var centralTag in centralTags)
                     {
-                        folderDb.LocalFileTags.Add(new LocalFileTag
+                        var localTag = existingTags.FirstOrDefault(t =>
+                            string.Equals(t.Name, centralTag.Name, StringComparison.OrdinalIgnoreCase));
+
+                        if (localTag == null)
                         {
-                            LocalFileRecordId = localFileId,
-                            LocalTagId = localTagId
-                        });
-                        result.AssociationsExported++;
+                            localTag = new LocalTag
+                            {
+                                Name = centralTag.Name,
+                                Description = centralTag.Description,
+                                CreatedAt = centralTag.CreatedAt,
+                                LastUsedAt = centralTag.LastUsedAt
+                            };
+                            folderDb.LocalTags.Add(localTag);
+                            folderDb.SaveChanges();
+                            existingTags.Add(localTag);
+                            result.TagsExported++;
+                        }
+                        else
+                        {
+                            // Update if central is newer
+                            if (centralTag.LastUsedAt > localTag.LastUsedAt)
+                            {
+                                localTag.LastUsedAt = centralTag.LastUsedAt;
+                                localTag.Description = centralTag.Description;
+                            }
+                        }
+
+                        tagMapping[centralTag.Id] = localTag.Id;
                     }
+
+                    // Export file records
+                    var existingFiles = folderDb.LocalFileRecords.ToList();
+                    var fileMapping = new Dictionary<int, int>(); // central ID -> local ID
+
+                    foreach (var centralFile in centralFiles)
+                    {
+                        var localFile = existingFiles.FirstOrDefault(f =>
+                            string.Equals(f.RelativePath, centralFile.RelativePath, StringComparison.OrdinalIgnoreCase));
+
+                        if (localFile == null)
+                        {
+                            localFile = new LocalFileRecord
+                            {
+                                FileName = centralFile.FileName,
+                                RelativePath = centralFile.RelativePath,
+                                LastModified = centralFile.LastModified,
+                                FileSize = centralFile.FileSize,
+                                CreatedAt = centralFile.CreatedAt
+                            };
+                            folderDb.LocalFileRecords.Add(localFile);
+                            folderDb.SaveChanges();
+                            existingFiles.Add(localFile);
+                            result.FilesExported++;
+                        }
+                        else
+                        {
+                            // Update if central is newer
+                            if (centralFile.LastModified > localFile.LastModified)
+                            {
+                                localFile.LastModified = centralFile.LastModified;
+                                localFile.FileSize = centralFile.FileSize;
+                            }
+                        }
+
+                        fileMapping[centralFile.Id] = localFile.Id;
+                    }
+
+                    // Export file-tag associations
+                    var existingAssociations = folderDb.LocalFileTags.ToList()
+                        .Select(ft => (ft.LocalFileRecordId, ft.LocalTagId))
+                        .ToHashSet();
+
+                    foreach (var centralFileTag in centralFileTagList)
+                    {
+                        if (!fileMapping.ContainsKey(centralFileTag.FileRecordId) ||
+                            !tagMapping.ContainsKey(centralFileTag.TagId))
+                            continue;
+
+                        var localFileId = fileMapping[centralFileTag.FileRecordId];
+                        var localTagId = tagMapping[centralFileTag.TagId];
+
+                        if (!existingAssociations.Contains((localFileId, localTagId)))
+                        {
+                            folderDb.LocalFileTags.Add(new LocalFileTag
+                            {
+                                LocalFileRecordId = localFileId,
+                                LocalTagId = localTagId
+                            });
+                            result.AssociationsExported++;
+                        }
+                    }
+
+                    folderDb.SaveChanges();
                 }
-
-                folderDb.SaveChanges();
-
-                // SQLite operations succeeded on the local temp file.
-                // Now copy it to the real destination (which may be Google Drive or another
-                // virtual filesystem that can't handle SQLite journal files during writes).
-                folderDb.Database.CloseConnection();
-                SqliteConnection.ClearAllPools();
+                // folderDb is fully disposed here; the SQLite file is closed and unlocked.
+                // No ClearAllPools() — that would also kill centralDb's connection.
 
                 var targetFileTaggerDir = Path.Combine(directoryPath, ".filetagger");
                 if (!Directory.Exists(targetFileTaggerDir))
                     Directory.CreateDirectory(targetFileTaggerDir);
 
-                var tempDbPath = Path.Combine(tempDir, ".filetagger", "tags.db");
                 var targetDbPath = Path.Combine(targetFileTaggerDir, "tags.db");
                 File.Copy(tempDbPath, targetDbPath, overwrite: true);
 
