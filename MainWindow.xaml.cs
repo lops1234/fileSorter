@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using FileTagger.Services;
@@ -342,7 +343,24 @@ namespace FileTagger
             LoadDirectories();
         }
 
-        private void MergeDuplicates_Click(object sender, RoutedEventArgs e)
+        #region Loading Overlay Helpers
+
+        private void ShowLoading(string status)
+        {
+            LoadingStatusText.Text = status;
+            LoadingOverlay.Visibility = Visibility.Visible;
+            MainTabControl.IsEnabled = false;
+        }
+
+        private void HideLoading()
+        {
+            LoadingOverlay.Visibility = Visibility.Collapsed;
+            MainTabControl.IsEnabled = true;
+        }
+
+        #endregion
+
+        private async void MergeDuplicates_Click(object sender, RoutedEventArgs e)
         {
             try
             {
@@ -365,7 +383,8 @@ namespace FileTagger
 
                 if (result == MessageBoxResult.Yes)
                 {
-                    var mergeResult = DatabaseManager.Instance.MergeAllDuplicateFileTaggerDatabases();
+                    ShowLoading("Merging duplicate databases…");
+                    var mergeResult = await Task.Run(() => DatabaseManager.Instance.MergeAllDuplicateFileTaggerDatabases());
 
                     if (mergeResult.DuplicateDatabasesFound == 0)
                     {
@@ -415,9 +434,13 @@ namespace FileTagger
                 MessageBox.Show($"Error during database merge: {ex.Message}",
                     "Merge Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            finally
+            {
+                HideLoading();
+            }
         }
 
-        private void VerifyFiles_Click(object sender, RoutedEventArgs e)
+        private async void VerifyFiles_Click(object sender, RoutedEventArgs e)
         {
             try
             {
@@ -432,7 +455,8 @@ namespace FileTagger
 
                 if (result == MessageBoxResult.Yes)
                 {
-                    var verificationResult = DatabaseManager.Instance.VerifyAndCleanupTaggedFiles();
+                    ShowLoading("Verifying tagged files…");
+                    var verificationResult = await Task.Run(() => DatabaseManager.Instance.VerifyAndCleanupTaggedFiles());
 
                     var message = $"File verification completed!\n\n" +
                                  $"Total files checked: {verificationResult.TotalFilesChecked}\n" +
@@ -478,19 +502,19 @@ namespace FileTagger
                 MessageBox.Show($"Error during file verification: {ex.Message}",
                     "Verification Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            finally
+            {
+                HideLoading();
+            }
         }
 
-        private void ScanForExisting_Click(object sender, RoutedEventArgs e)
+        private async void ScanForExisting_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                // Show progress message
-                var originalText = ScanForExistingButton.Content.ToString();
-                ScanForExistingButton.Content = "Scanning...";
-                ScanForExistingButton.IsEnabled = false;
+                ShowLoading("Scanning for existing databases…");
 
-                // Perform the scan
-                var discoveredDirectories = DatabaseManager.Instance.DiscoverAndImportExistingDatabases();
+                var discoveredDirectories = await Task.Run(() => DatabaseManager.Instance.DiscoverAndImportExistingDatabases());
 
                 if (discoveredDirectories.Any())
                 {
@@ -519,13 +543,11 @@ namespace FileTagger
             }
             finally
             {
-                // Restore button state
-                ScanForExistingButton.Content = "Scan for Existing Databases";
-                ScanForExistingButton.IsEnabled = true;
+                HideLoading();
             }
         }
 
-        private void PullFromFolder_Click(object sender, RoutedEventArgs e)
+        private async void PullFromFolder_Click(object sender, RoutedEventArgs e)
         {
             if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
             {
@@ -545,7 +567,9 @@ namespace FileTagger
 
                 if (result == MessageBoxResult.Yes)
                 {
-                    var pullResult = DatabaseManager.Instance.PullFromFolder(selectedViewModel.DirectoryPath);
+                    ShowLoading("Pulling from folder…");
+                    var path = selectedViewModel.DirectoryPath;
+                    var pullResult = await Task.Run(() => DatabaseManager.Instance.PullFromFolder(path));
 
                     string message;
                     if (pullResult.WasBootstrapped)
@@ -581,9 +605,13 @@ namespace FileTagger
             {
                 MessageBox.Show($"Error during pull: {ex.Message}", "Pull Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            finally
+            {
+                HideLoading();
+            }
         }
 
-        private void PushToFolder_Click(object sender, RoutedEventArgs e)
+        private async void PushToFolder_Click(object sender, RoutedEventArgs e)
         {
             if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
             {
@@ -605,7 +633,14 @@ namespace FileTagger
 
                 if (result == MessageBoxResult.Yes)
                 {
-                    var pushResult = DatabaseManager.Instance.PushToFolder(selectedViewModel.DirectoryPath);
+                    ShowLoading("Pulling remote changes…");
+                    var path = selectedViewModel.DirectoryPath;
+                    var pushResult = await Task.Run(() =>
+                    {
+                        // Push internally does a pull-first; update status text on UI thread mid-way is not
+                        // straightforward without callbacks, so we show a combined message.
+                        return DatabaseManager.Instance.PushToFolder(path);
+                    });
 
                     var message = $"Push completed!\n\n" +
                                  $"Tags exported: {pushResult.TagsExported}\n" +
@@ -627,9 +662,13 @@ namespace FileTagger
             {
                 MessageBox.Show($"Error during push: {ex.Message}", "Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            finally
+            {
+                HideLoading();
+            }
         }
 
-        private void CleanupRemoteDeletedTags_Click(object sender, RoutedEventArgs e)
+        private async void CleanupRemoteDeletedTags_Click(object sender, RoutedEventArgs e)
         {
             if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
             {
@@ -649,7 +688,9 @@ namespace FileTagger
 
                 if (confirm == MessageBoxResult.Yes)
                 {
-                    DatabaseManager.Instance.CleanupRemoteDeletedTags(selectedViewModel.DirectoryPath);
+                    ShowLoading("Cleaning remote deleted tags…");
+                    var path = selectedViewModel.DirectoryPath;
+                    await Task.Run(() => DatabaseManager.Instance.CleanupRemoteDeletedTags(path));
                     MessageBox.Show("Remote deleted-tags history cleared.", "Done",
                         MessageBoxButton.OK, MessageBoxImage.Information);
                 }
@@ -657,6 +698,10 @@ namespace FileTagger
             catch (Exception ex)
             {
                 MessageBox.Show($"Error: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                HideLoading();
             }
         }
 
@@ -670,7 +715,7 @@ namespace FileTagger
             LoadTagFilter();
         }
 
-        private void CleanupFolder_Click(object sender, RoutedEventArgs e)
+        private async void CleanupFolder_Click(object sender, RoutedEventArgs e)
         {
             if (DirectoriesListBox.SelectedItem is not DirectoryViewModel selectedViewModel)
             {
@@ -700,7 +745,9 @@ namespace FileTagger
 
                 if (result == MessageBoxResult.Yes)
                 {
-                    var cleanupResult = DatabaseManager.Instance.CleanupFolder(selectedViewModel.DirectoryPath);
+                    ShowLoading("Cleaning up folder databases…");
+                    var path = selectedViewModel.DirectoryPath;
+                    var cleanupResult = await Task.Run(() => DatabaseManager.Instance.CleanupFolder(path));
 
                     var message = $"Cleanup completed!\n\n" +
                                  $"Directories deleted: {cleanupResult.DirectoriesDeleted}\n";
@@ -748,6 +795,10 @@ namespace FileTagger
             catch (Exception ex)
             {
                 MessageBox.Show($"Error during cleanup: {ex.Message}", "Cleanup Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                HideLoading();
             }
         }
 

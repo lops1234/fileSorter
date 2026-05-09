@@ -24,7 +24,7 @@
             </tb:TaskbarIcon.ContextMenu>
         </tb:TaskbarIcon>
 
-        <TabControl Margin="10">
+        <TabControl x:Name="MainTabControl" Margin="10">
             <!-- Settings Tab -->
             <TabItem Header="Settings">
                 <Grid Margin="10">
@@ -225,5 +225,23 @@
                 </Grid>
             </TabItem>
         </TabControl>
+        <!-- Loading Overlay -->
+        <Grid x:Name="LoadingOverlay" Visibility="Collapsed" Background="#99000000" Panel.ZIndex="999">
+            <Border Background="White" CornerRadius="8" Padding="30,20" Width="340"
+                    VerticalAlignment="Center" HorizontalAlignment="Center">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.4"/>
+                </Border.Effect>
+                <StackPanel>
+                    <TextBlock x:Name="LoadingStatusText" Text="Please wait…"
+                               FontSize="14" FontWeight="SemiBold" Foreground="#1a1a2e"
+                               HorizontalAlignment="Center" Margin="0,0,0,12" TextWrapping="Wrap"
+                               TextAlignment="Center"/>
+                    <ProgressBar x:Name="LoadingProgressBar" IsIndeterminate="True"
+                                 Height="6" Minimum="0" Maximum="100"
+                                 Foreground="#0078d7"/>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>
