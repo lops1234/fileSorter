@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -50,6 +52,43 @@ namespace FileTagger.Windows
         }
     }
 
+    public class OllamaSettings
+    {
+        public string Host { get; set; } = "http://localhost:11434";
+        public string Model { get; set; } = "huihui_ai/gemma-4-abliterated:12b";
+
+        private static string SettingsFilePath => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "FileTagger", "ollama-settings.json");
+
+        public static OllamaSettings Load()
+        {
+            try
+            {
+                if (File.Exists(SettingsFilePath))
+                {
+                    var json = File.ReadAllText(SettingsFilePath);
+                    return JsonSerializer.Deserialize<OllamaSettings>(json) ?? new OllamaSettings();
+                }
+            }
+            catch { }
+            return new OllamaSettings();
+        }
+
+        public void Save()
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(SettingsFilePath)!;
+                if (!Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+                var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(SettingsFilePath, json);
+            }
+            catch { }
+        }
+    }
+
     public partial class AutoTagWindow : Window
     {
         private const string AiTaggedUnchecked = "AI-Tagged-Unchecked";
@@ -57,6 +96,8 @@ namespace FileTagger.Windows
 
         private static readonly HashSet<string> ImageExtensions =
             new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp" };
+
+        private static readonly HttpClient OllamaHttp = new() { Timeout = TimeSpan.FromMinutes(10) };
 
         private CancellationTokenSource _cts;
         private bool _isRunning;
@@ -93,6 +134,10 @@ namespace FileTagger.Windows
             LlamaPathTextBox.Text = s.LlamaPath;
             ModelPathTextBox.Text = s.ModelPath;
             MmprojPathTextBox.Text = s.MmprojPath;
+
+            var o = OllamaSettings.Load();
+            OllamaHostTextBox.Text = o.Host;
+            OllamaModelTextBox.Text = o.Model;
         }
 
         private void SaveSettings()
@@ -102,6 +147,15 @@ namespace FileTagger.Windows
                 LlamaPath = LlamaPathTextBox.Text.Trim(),
                 ModelPath = ModelPathTextBox.Text.Trim(),
                 MmprojPath = MmprojPathTextBox.Text.Trim()
+            }.Save();
+        }
+
+        private void SaveOllamaSettings()
+        {
+            new OllamaSettings
+            {
+                Host = OllamaHostTextBox.Text.Trim(),
+                Model = OllamaModelTextBox.Text.Trim()
             }.Save();
         }
 
@@ -163,6 +217,106 @@ namespace FileTagger.Windows
 
         #region Start / Cancel
 
+        private bool TryCollectImageFiles(out List<string> imageFiles, bool includeTagged = false)
+        {
+            imageFiles = new List<string>();
+
+            if (SpecificImageRadio.IsChecked == true)
+            {
+                var imagePath = SpecificImageTextBox.Text.Trim();
+                if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+                {
+                    MessageBox.Show("Please select a valid image file.", "No Image Selected",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                if (!ImageExtensions.Contains(Path.GetExtension(imagePath)))
+                {
+                    MessageBox.Show("The selected file is not a supported image type.", "Invalid File",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                imageFiles = new List<string> { imagePath };
+                return true;
+            }
+
+            List<string> targetDirs;
+            if (AllDirectoriesRadio.IsChecked == true)
+            {
+                targetDirs = DatabaseManager.Instance.GetAllActiveDirectories();
+            }
+            else
+            {
+                if (DirectoryComboBox.SelectedItem is string selectedDir)
+                    targetDirs = new List<string> { selectedDir };
+                else
+                {
+                    MessageBox.Show("Please select a directory.", "No Selection",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+            }
+
+            if (!targetDirs.Any())
+            {
+                MessageBox.Show("No watched directories configured.", "No Directories",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+
+            imageFiles = targetDirs
+                .Where(Directory.Exists)
+                .SelectMany(d => Directory.GetFiles(d, "*", SearchOption.AllDirectories))
+                .Where(f => ImageExtensions.Contains(Path.GetExtension(f)))
+                .Where(f =>
+                {
+                    if (includeTagged)
+                        return true;
+
+                    var tags = DatabaseManager.Instance.GetTagsForFile(f);
+                    return tags.Count == 0 ||
+                           tags.All(t => t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase));
+                })
+                .ToList();
+
+            if (!imageFiles.Any())
+            {
+                var message = includeTagged
+                    ? "No image files found in the selected directories."
+                    : "No untagged image files found in the selected directories.";
+                MessageBox.Show(message, "No Images",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return false;
+            }
+
+            return true;
+        }
+
+        private void BeginRun(int imageCount)
+        {
+            _isRunning = true;
+            _cts = new CancellationTokenSource();
+            StartButton.IsEnabled = false;
+            TestOllamaButton.IsEnabled = false;
+            CancelButton.IsEnabled = true;
+            LogTextBox.Clear();
+            ProgressBar.Minimum = 0;
+            ProgressBar.Maximum = imageCount;
+            ProgressBar.Value = 0;
+            ProgressLabel.Text = $"Processed 0 / {imageCount}";
+        }
+
+        private void EndRun()
+        {
+            _isRunning = false;
+            Dispatcher.Invoke(() =>
+            {
+                StartButton.IsEnabled = true;
+                TestOllamaButton.IsEnabled = true;
+                CancelButton.IsEnabled = false;
+            });
+        }
+
         private async void Start_Click(object sender, RoutedEventArgs e)
         {
             if (_isRunning)
@@ -193,82 +347,10 @@ namespace FileTagger.Windows
 
             SaveSettings();
 
-            // Collect image files
-            List<string> imageFiles;
+            if (!TryCollectImageFiles(out var imageFiles))
+                return;
 
-            if (SpecificImageRadio.IsChecked == true)
-            {
-                var imagePath = SpecificImageTextBox.Text.Trim();
-                if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
-                {
-                    MessageBox.Show("Please select a valid image file.", "No Image Selected",
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-                if (!ImageExtensions.Contains(Path.GetExtension(imagePath)))
-                {
-                    MessageBox.Show("The selected file is not a supported image type.", "Invalid File",
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-                imageFiles = new List<string> { imagePath };
-            }
-            else
-            {
-                List<string> targetDirs;
-                if (AllDirectoriesRadio.IsChecked == true)
-                {
-                    targetDirs = DatabaseManager.Instance.GetAllActiveDirectories();
-                }
-                else
-                {
-                    if (DirectoryComboBox.SelectedItem is string selectedDir)
-                        targetDirs = new List<string> { selectedDir };
-                    else
-                    {
-                        MessageBox.Show("Please select a directory.", "No Selection",
-                            MessageBoxButton.OK, MessageBoxImage.Warning);
-                        return;
-                    }
-                }
-
-                if (!targetDirs.Any())
-                {
-                    MessageBox.Show("No watched directories configured.", "No Directories",
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-
-                imageFiles = targetDirs
-                    .Where(Directory.Exists)
-                    .SelectMany(d => Directory.GetFiles(d, "*", SearchOption.AllDirectories))
-                    .Where(f => ImageExtensions.Contains(Path.GetExtension(f)))
-                    .Where(f =>
-                    {
-                        var tags = DatabaseManager.Instance.GetTagsForFile(f);
-                        return tags.Count == 0 ||
-                               tags.All(t => t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase));
-                    })
-                    .ToList();
-
-                if (!imageFiles.Any())
-                {
-                    MessageBox.Show("No untagged image files found in the selected directories.", "No Images",
-                        MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
-                }
-
-            }
-
-            // Prepare UI
-            _isRunning = true;
-            _cts = new CancellationTokenSource();
-            StartButton.IsEnabled = false;
-            CancelButton.IsEnabled = true;
-            LogTextBox.Text = string.Empty;
-            ProgressBar.Minimum = 0;
-            ProgressBar.Maximum = imageFiles.Count;
-            ProgressBar.Value = 0;
+            BeginRun(imageFiles.Count);
 
             var token = _cts.Token;
 
@@ -293,12 +375,108 @@ namespace FileTagger.Windows
             }
             finally
             {
-                _isRunning = false;
-                Dispatcher.Invoke(() =>
+                EndRun();
+            }
+        }
+
+        private async void TestOllama_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isRunning)
+            {
+                MessageBox.Show("A tagging run is already in progress.", "Busy",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var host = OllamaHostTextBox.Text.Trim();
+            var model = OllamaModelTextBox.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                MessageBox.Show("Please specify the Ollama host URL.", "Missing Setting",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(model))
+            {
+                MessageBox.Show("Please specify the Ollama model name.", "Missing Setting",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            SaveOllamaSettings();
+
+            if (!TryCollectImageFiles(out var imageFiles, includeTagged: true))
+                return;
+
+            BeginRun(imageFiles.Count);
+
+            var token = _cts.Token;
+
+            Log($"Starting Ollama test for {imageFiles.Count} image(s)...");
+            Log($"Host  : {host}");
+            Log($"Model : {model}");
+            Log(string.Empty);
+
+            try
+            {
+                bool onlyDbTags = OnlyDbTagsCheckBox.IsChecked == true;
+                int processed = 0;
+
+                foreach (var imagePath in imageFiles)
                 {
-                    StartButton.IsEnabled = true;
-                    CancelButton.IsEnabled = false;
-                });
+                    token.ThrowIfCancellationRequested();
+
+                    var fileName = Path.GetFileName(imagePath);
+                    Log($"[{processed + 1}/{imageFiles.Count}] {fileName}");
+
+                    var allTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
+                    var tagListString = onlyDbTags && allTagNames.Any()
+                        ? string.Join(", ", allTagNames)
+                        : string.Empty;
+
+                    if (onlyDbTags && !allTagNames.Any())
+                        Log("  No tags in database — using default prompt.");
+
+                    Log("  Sending request to Ollama...");
+
+                    string output;
+                    try
+                    {
+                        output = await InvokeOllama(host, model, imagePath, tagListString, token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"\n[ERROR] Ollama request failed — stopping.\n{ex.Message}");
+                        throw;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(output))
+                        Log("  [EMPTY] No content in Ollama response.");
+                    else
+                        Log($"  Response:\n{output}");
+
+                    Log(string.Empty);
+                    UpdateProgress(++processed, imageFiles.Count);
+                }
+
+                Log($"[DONE] Ollama test complete. Processed {processed} image(s).");
+            }
+            catch (OperationCanceledException)
+            {
+                Log("\n[CANCELLED] Ollama test was cancelled.");
+            }
+            catch (Exception ex)
+            {
+                Log($"\n[ERROR] {ex.Message}");
+            }
+            finally
+            {
+                EndRun();
             }
         }
 
@@ -430,16 +608,23 @@ namespace FileTagger.Windows
             Log($"\n[DONE] Processed {processed} image(s), added {tagsAdded} tag association(s) in total.");
         }
 
-        private static async Task<string> InvokeLlama(string llamaPath, string modelPath, string mmprojPath,
-            string imagePath, string tagList, CancellationToken token)
+        private static (string sysPrompt, string userPrompt) BuildTaggingPrompts(string tagList)
         {
             var sysPrompt = "List sexual content tags for this image." +
                             "Respond with ONLY a comma-separated list of tags, nothing else. " +
                             "No sentences, no explanations, no preamble";
 
-            var prompt = string.IsNullOrEmpty(tagList)
+            var userPrompt = string.IsNullOrEmpty(tagList)
                 ? BasicPromt
                 : $"List tags for this image. Only use tags from this list: {tagList}";
+
+            return (sysPrompt, userPrompt);
+        }
+
+        private static async Task<string> InvokeLlama(string llamaPath, string modelPath, string mmprojPath,
+            string imagePath, string tagList, CancellationToken token)
+        {
+            var (sysPrompt, prompt) = BuildTaggingPrompts(tagList);
 
             var escapedSys = sysPrompt.Replace("\"", "\\\"");
             var escapedPrompt = prompt.Replace("\"", "\\\"");
@@ -483,6 +668,44 @@ namespace FileTagger.Windows
             return stdout;
         }
 
+        private static async Task<string> InvokeOllama(string host, string model, string imagePath,
+            string tagList, CancellationToken token)
+        {
+            var (sysPrompt, userPrompt) = BuildTaggingPrompts(tagList);
+
+            var imageBase64 = Convert.ToBase64String(
+                await File.ReadAllBytesAsync(imagePath, token));
+
+            var requestBody = new
+            {
+                model,
+                stream = false,
+                messages = new object[]
+                {
+                    new { role = "system", content = sysPrompt },
+                    new { role = "user", content = userPrompt, images = new[] { imageBase64 } }
+                }
+            };
+
+            var url = host.TrimEnd('/') + "/api/chat";
+            using var content = new StringContent(
+                JsonSerializer.Serialize(requestBody),
+                Encoding.UTF8,
+                "application/json");
+
+            using var response = await OllamaHttp.PostAsync(url, content, token);
+            var json = await response.Content.ReadAsStringAsync(token);
+
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"Ollama HTTP {(int)response.StatusCode}: {json}");
+
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement
+                .GetProperty("message")
+                .GetProperty("content")
+                .GetString() ?? string.Empty;
+        }
+
         private static List<string> ParseTokens(string output)
         {
             var idx = output.IndexOf(BasicPromt, StringComparison.OrdinalIgnoreCase);
@@ -515,11 +738,17 @@ namespace FileTagger.Windows
 
         private void Log(string message)
         {
-            Dispatcher.Invoke(() =>
+            void append()
             {
-                LogTextBox.AppendText(message + "\n");
-                LogScrollViewer.ScrollToBottom();
-            });
+                LogTextBox.AppendText(message + Environment.NewLine);
+                LogTextBox.CaretIndex = LogTextBox.Text.Length;
+                LogTextBox.ScrollToEnd();
+            }
+
+            if (Dispatcher.CheckAccess())
+                append();
+            else
+                Dispatcher.Invoke(append);
         }
 
         #endregion
