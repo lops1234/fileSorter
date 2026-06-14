@@ -928,6 +928,63 @@ namespace FileTagger
             }
         }
 
+        private void StashAllTags_Click(object sender, RoutedEventArgs e)
+        {
+            var result = MessageBox.Show(
+                "Delete ALL tags and stash them for possible restore?\n\n" +
+                "Every tag will be moved to the deleted-tags table with StashedTags set.\n" +
+                "On the next push, deletions will propagate to remote folder databases.\n" +
+                "Stashed tags remain restorable locally after push.",
+                "Stash All Tags", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.Yes)
+                return;
+
+            try
+            {
+                var count = DatabaseManager.Instance.StashAllTags();
+                LoadTags();
+                LoadTagFilter();
+                MessageBox.Show($"Stashed {count} tag(s). Use \"Restore Stashed Tags\" to undo.", "Stash Complete",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error stashing tags: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void RestoreStashedTags_Click(object sender, RoutedEventArgs e)
+        {
+            var stashedCount = DatabaseManager.Instance.GetStashedTagCount();
+            if (stashedCount == 0)
+            {
+                MessageBox.Show("No stashed tags to restore.", "Restore Stashed Tags",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var result = MessageBox.Show(
+                $"Restore all {stashedCount} stashed tag(s) and their file associations?",
+                "Restore Stashed Tags", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+            if (result != MessageBoxResult.Yes)
+                return;
+
+            try
+            {
+                var restored = DatabaseManager.Instance.RestoreAllStashedTags();
+                LoadTags();
+                LoadTagFilter();
+                MessageBox.Show($"Restored {restored} stashed tag(s).", "Restore Complete",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error restoring stashed tags: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private void AutoTagImages_Click(object sender, RoutedEventArgs e)
         {
             var window = new AutoTagWindow();

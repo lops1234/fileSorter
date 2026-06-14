@@ -82,6 +82,21 @@ namespace FileTagger.Services
                     RelativePath TEXT    NOT NULL,
                     FOREIGN KEY (DeletedTagId) REFERENCES DeletedTags(Id) ON DELETE CASCADE
                 )");
+
+            EnsureDeletedTagsStashedColumn(db);
+        }
+
+        private static void EnsureDeletedTagsStashedColumn(CentralDbContext db)
+        {
+            try
+            {
+                db.Database.ExecuteSqlRaw(
+                    "ALTER TABLE DeletedTags ADD COLUMN StashedTags INTEGER NOT NULL DEFAULT 0");
+            }
+            catch
+            {
+                // Column already exists
+            }
         }
 
         /// <summary>
@@ -503,8 +518,11 @@ namespace FileTagger.Services
 
                 centralDir.LastSyncAt = DateTime.UtcNow;
 
-                // Deleted tags have been propagated to remote — clear the local records for this dir
-                var propagated = centralDb.DeletedTags.Where(dt => dt.DirectoryId == centralDir.Id).ToList();
+                // Deleted tags have been propagated to remote — clear non-stashed records for this dir.
+                // Stashed tags are kept locally so they can still be bulk-restored.
+                var propagated = centralDb.DeletedTags
+                    .Where(dt => dt.DirectoryId == centralDir.Id && !dt.StashedTags)
+                    .ToList();
                 centralDb.DeletedTags.RemoveRange(propagated);
 
                 centralDb.SaveChanges();
@@ -930,11 +948,12 @@ namespace FileTagger.Services
             public List<string>   FilePaths     { get; set; } = new();
         }
 
-        /// <summary>Returns all locally-recorded deleted tags with their original file paths.</summary>
+        /// <summary>Returns all locally-recorded deleted tags with their original file paths (excludes stashed bulk deletes).</summary>
         public List<DeletedTagInfo> GetDeletedTags()
         {
             using var db = new CentralDbContext();
             return db.DeletedTags
+                .Where(dt => !dt.StashedTags)
                 .Include(dt => dt.Directory)
                 .Include(dt => dt.DeletedTagFiles)
                 .OrderBy(dt => dt.DirectoryId).ThenBy(dt => dt.Name)
@@ -1007,6 +1026,62 @@ namespace FileTagger.Services
 
             db.DeletedTags.Remove(deleted);
             db.SaveChanges();
+        }
+
+        /// <summary>
+        /// Deletes every active tag and records each in CentralDeletedTag with StashedTags=true.
+        /// Stashed deletions are propagated on push but kept locally for bulk restore.
+        /// </summary>
+        public int StashAllTags()
+        {
+            using var centralDb = new CentralDbContext();
+
+            var tagsToDelete = centralDb.Tags
+                .Include(t => t.FileTags)
+                    .ThenInclude(ft => ft.FileRecord)
+                .ToList();
+
+            foreach (var tag in tagsToDelete)
+            {
+                var deletedTag = new CentralDeletedTag
+                {
+                    Name        = tag.Name,
+                    Description = tag.Description,
+                    DirectoryId = tag.DirectoryId,
+                    DeletedAt   = DateTime.UtcNow,
+                    StashedTags = true
+                };
+                foreach (var ft in tag.FileTags)
+                    deletedTag.DeletedTagFiles.Add(new CentralDeletedTagFile { RelativePath = ft.FileRecord.RelativePath });
+
+                centralDb.DeletedTags.Add(deletedTag);
+                centralDb.Tags.Remove(tag);
+            }
+
+            centralDb.SaveChanges();
+            return tagsToDelete.Count;
+        }
+
+        /// <summary>Returns the number of stashed (bulk-deleted) tags waiting to be restored.</summary>
+        public int GetStashedTagCount()
+        {
+            using var db = new CentralDbContext();
+            return db.DeletedTags.Count(dt => dt.StashedTags);
+        }
+
+        /// <summary>Restores every tag recorded with StashedTags=true.</summary>
+        public int RestoreAllStashedTags()
+        {
+            using var db = new CentralDbContext();
+            var stashedIds = db.DeletedTags
+                .Where(dt => dt.StashedTags)
+                .Select(dt => dt.Id)
+                .ToList();
+
+            foreach (var id in stashedIds)
+                RestoreDeletedTag(id);
+
+            return stashedIds.Count;
         }
 
         /// <summary>Removes all local CentralDeletedTag records (and their file snapshots).</summary>

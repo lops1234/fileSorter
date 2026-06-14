@@ -129,6 +129,12 @@ namespace FileTagger.Data
 
         public DateTime DeletedAt { get; set; } = DateTime.UtcNow;
 
+        /// <summary>
+        /// True when the tag was bulk-deleted via "Stash All Tags" and can be restored in bulk.
+        /// Stashed records are kept locally after push so they can still be restored.
+        /// </summary>
+        public bool StashedTags { get; set; }
+
         // Navigation properties
         public virtual CentralDirectory Directory { get; set; } = null!;
         public virtual ICollection<CentralDeletedTagFile> DeletedTagFiles { get; set; } = new List<CentralDeletedTagFile>();

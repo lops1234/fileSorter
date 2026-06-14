@@ -149,6 +149,12 @@
                         <Button x:Name="AutoTagImagesButton" Content="🤖 Auto Tag with AI" Click="AutoTagImages_Click"
                                 Margin="0,0,10,0" FontWeight="Bold"
                                 ToolTip="Automatically tag images using a local LLaMA vision model"/>
+                        <Button x:Name="StashAllTagsButton" Content="📦 Stash All Tags" Click="StashAllTags_Click"
+                                Margin="0,0,10,0" Background="#FFF8E8" BorderBrush="#E8C878"
+                                ToolTip="Delete all tags and move them to the deleted-tags table (StashedTags). Deletions propagate on push."/>
+                        <Button x:Name="RestoreStashedTagsButton" Content="↩ Restore Stashed Tags" Click="RestoreStashedTags_Click"
+                                Margin="0,0,10,0" Background="#E8F8E8" BorderBrush="#88C888"
+                                ToolTip="Restore all tags that were bulk-deleted via Stash All Tags"/>
                         <Button x:Name="ExportAllTagsButton" Content="Export All Tags..." Click="ExportAllTags_Click"
                                 Margin="0,0,10,0" ToolTip="Save all tags as a comma-separated text file"/>
                         <Button x:Name="SaveTagChangesButton" Content="Save Changes" Click="SaveTagChanges_Click" 
