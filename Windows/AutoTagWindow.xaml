@@ -50,7 +50,7 @@
         </GroupBox>
 
         <!-- Ollama Settings -->
-        <GroupBox Grid.Row="2" Header="Ollama Settings (Test)" Margin="0,0,0,8" Padding="10">
+        <GroupBox Grid.Row="2" Header="Ollama Settings" Margin="0,0,0,8" Padding="10">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -103,6 +103,8 @@
                          ToolTip="If filled, only this message is sent to the model — no system or default prompts."/>
                 <CheckBox x:Name="OnlyDbTagsCheckBox" Margin="0,8,0,0"
                           Content="Only tags from database (validate LLM output against existing tags)" IsChecked="True"/>
+                <CheckBox x:Name="RetagTaggedFilesCheckBox" Margin="0,6,0,0"
+                          Content="Retag tagged files (include files already auto-tagged by AI)" IsChecked="False"/>
             </StackPanel>
         </GroupBox>
 
@@ -126,8 +128,8 @@
         <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button x:Name="StartButton" Content="▶ Start Auto-Tagging" Click="Start_Click"
                     Width="150" Margin="0,0,10,0" FontWeight="Bold"/>
-            <Button x:Name="TestOllamaButton" Content="▶ Test Ollama Tagging" Click="TestOllama_Click"
-                    Width="160" Margin="0,0,10,0"/>
+            <Button x:Name="OllamaStartButton" Content="▶ Start Ollama Tagging" Click="OllamaStart_Click"
+                    Width="160" Margin="0,0,10,0" FontWeight="Bold"/>
             <Button x:Name="CancelButton" Content="⏹ Cancel" Click="Cancel_Click"
                     Width="90" Margin="0,0,10,0" IsEnabled="False"/>
             <Button Content="Close" Click="Close_Click" Width="80"/>
