@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Media.Imaging;
 using FileTagger.Services;
 using Microsoft.Win32;
 
@@ -16,9 +17,13 @@ namespace FileTagger.Windows
 {
     public class LlamaSettings
     {
+        public const string DefaultCustomMessage =
+            "Tag image with comma seperated tags. Use tags only from provided list: Abs, AI generated, Alice, Anal, Angry, Anime, Anticipation, Ass, Athletic, Back, Ball gag, Bendy, Bestiality, Blindfold, Bondage, Boobs, Boots, Boy, Bunny, But plug, Cam, Cape, Cat ears, Censure, Chain, Chastity, Choker, Crisp, Cum, Cyborg, Demon, Dick, Dildo, Distraction, Domination, Dominatrix, DP, Drawing, Dress, Elf, Fairy, Fary, Feet, Femdom, Fingering, Fishnets, Foto, Fucking, Furry, Futa, Ghotic, Gif, Girl, Girls, Grayscale, Group, Handjob, Happy, Heels, Horns, Humiliation, In public, Joy, Kibrika, Lace, Latex, Leash, Leashe, Lesbian, Lingerie, Lops, Maid, Makima, Monochrome, Monster, Nature, Neon, Nude, OG hot, Oral, Ork, Painting, Pair, Panels, Party, Pegging, Piercing, Pleasure, Pole, Public, Punk, Pussy, Rope, Scared, Seductive, Sex, Sketch, Slave, Slutty, Smiling, Solo, Sound, Spanking, Spit, Stern, Stirna, Stockade, Stockings, Strap-on, Straps, Struggle, Surprise, Sweet, Tattoo, Tease, Tentacles, Text, Threesome, Tight clothes, Tights, Tongue, Toys, Using, Vampire, Whip, Witchy";
+
         public string LlamaPath { get; set; } = string.Empty;
         public string ModelPath { get; set; } = string.Empty;
         public string MmprojPath { get; set; } = string.Empty;
+        public string CustomMessage { get; set; } = DefaultCustomMessage;
 
         private static string SettingsFilePath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -135,6 +140,9 @@ namespace FileTagger.Windows
             LlamaPathTextBox.Text = s.LlamaPath;
             ModelPathTextBox.Text = s.ModelPath;
             MmprojPathTextBox.Text = s.MmprojPath;
+            CustomMessageTextBox.Text = string.IsNullOrEmpty(s.CustomMessage)
+                ? LlamaSettings.DefaultCustomMessage
+                : s.CustomMessage;
 
             var o = OllamaSettings.Load();
             OllamaHostTextBox.Text = o.Host;
@@ -148,9 +156,12 @@ namespace FileTagger.Windows
             {
                 LlamaPath = LlamaPathTextBox.Text.Trim(),
                 ModelPath = ModelPathTextBox.Text.Trim(),
-                MmprojPath = MmprojPathTextBox.Text.Trim()
+                MmprojPath = MmprojPathTextBox.Text.Trim(),
+                CustomMessage = CustomMessageTextBox.Text.Trim()
             }.Save();
         }
+
+        private string GetCustomMessage() => CustomMessageTextBox.Text.Trim();
 
         private void SaveOllamaSettings()
         {
@@ -370,7 +381,8 @@ namespace FileTagger.Windows
             try
             {
                 bool onlyDbTags = OnlyDbTagsCheckBox.IsChecked == true;
-                await RunAutoTagging(llamaPath, modelPath, mmprojPath, imageFiles, onlyDbTags, token);
+                var customMessage = GetCustomMessage();
+                await RunAutoTagging(llamaPath, modelPath, mmprojPath, imageFiles, onlyDbTags, customMessage, token);
             }
             catch (OperationCanceledException)
             {
@@ -418,6 +430,7 @@ namespace FileTagger.Windows
             }
 
             SaveOllamaSettings();
+            SaveSettings();
 
             if (!TryCollectImageFiles(out var imageFiles, includeTagged: true))
                 return;
@@ -435,6 +448,7 @@ namespace FileTagger.Windows
             try
             {
                 bool onlyDbTags = OnlyDbTagsCheckBox.IsChecked == true;
+                var customMessage = GetCustomMessage();
                 int processed = 0;
 
                 foreach (var imagePath in imageFiles)
@@ -445,19 +459,25 @@ namespace FileTagger.Windows
                     Log($"[{processed + 1}/{imageFiles.Count}] {fileName}");
 
                     var allTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
-                    var tagListString = onlyDbTags && allTagNames.Any()
+                    var tagListString = string.IsNullOrEmpty(customMessage) && onlyDbTags && allTagNames.Any()
                         ? string.Join(", ", allTagNames)
                         : string.Empty;
 
-                    if (onlyDbTags && !allTagNames.Any())
+                    if (string.IsNullOrEmpty(customMessage) && onlyDbTags && !allTagNames.Any())
                         Log("  No tags in database — using default prompt.");
+
+                    if (!string.IsNullOrEmpty(customMessage))
+                        Log($"  Using custom message: {customMessage}");
+
+                    if (Path.GetExtension(imagePath).Equals(".webp", StringComparison.OrdinalIgnoreCase))
+                        Log("  Converting WebP to JPEG for Ollama...");
 
                     Log("  Sending request to Ollama...");
 
                     string output;
                     try
                     {
-                        output = await InvokeOllama(host, model, imagePath, tagListString, numCtx, token);
+                        output = await InvokeOllama(host, model, imagePath, tagListString, customMessage, numCtx, token);
                     }
                     catch (OperationCanceledException)
                     {
@@ -506,7 +526,7 @@ namespace FileTagger.Windows
         #region Core Auto-Tagging Logic
 
         private async Task RunAutoTagging(string llamaPath, string modelPath, string mmprojPath,
-            List<string> imageFiles, bool onlyDbTags, CancellationToken token)
+            List<string> imageFiles, bool onlyDbTags, string customMessage, CancellationToken token)
         {
             int processed = 0;
             int tagsAdded = 0;
@@ -521,20 +541,22 @@ namespace FileTagger.Windows
                 // Re-fetch all tags from DB before each image so newly added tags are included
                 var allTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
 
-                if (onlyDbTags && !allTagNames.Any())
+                if (onlyDbTags && !allTagNames.Any() && string.IsNullOrEmpty(customMessage))
                 {
                     Log("  [SKIP] No tags in database to match against.");
                     UpdateProgress(++processed, imageFiles.Count);
                     continue;
                 }
 
-                var tagListString = onlyDbTags ? string.Join(", ", allTagNames) : string.Empty;
+                var tagListString = string.IsNullOrEmpty(customMessage) && onlyDbTags
+                    ? string.Join(", ", allTagNames)
+                    : string.Empty;
 
                 // Run llama-cli
                 string output;
                 try
                 {
-                    output = await InvokeLlama(llamaPath, modelPath, mmprojPath, imagePath, tagListString, token);
+                    output = await InvokeLlama(llamaPath, modelPath, mmprojPath, imagePath, tagListString, customMessage, token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -622,8 +644,11 @@ namespace FileTagger.Windows
             Log($"\n[DONE] Processed {processed} image(s), added {tagsAdded} tag association(s) in total.");
         }
 
-        private static (string sysPrompt, string userPrompt) BuildTaggingPrompts(string tagList)
+        private static (string sysPrompt, string userPrompt) BuildTaggingPrompts(string customMessage, string tagList)
         {
+            if (!string.IsNullOrWhiteSpace(customMessage))
+                return (string.Empty, customMessage.Trim());
+
             var sysPrompt = "List sexual content tags for this image." +
                             "Respond with ONLY a comma-separated list of tags, nothing else. " +
                             "No sentences, no explanations, no preamble";
@@ -636,17 +661,19 @@ namespace FileTagger.Windows
         }
 
         private static async Task<string> InvokeLlama(string llamaPath, string modelPath, string mmprojPath,
-            string imagePath, string tagList, CancellationToken token)
+            string imagePath, string tagList, string customMessage, CancellationToken token)
         {
-            var (sysPrompt, prompt) = BuildTaggingPrompts(tagList);
+            var (sysPrompt, prompt) = BuildTaggingPrompts(customMessage, tagList);
 
-            var escapedSys = sysPrompt.Replace("\"", "\\\"");
             var escapedPrompt = prompt.Replace("\"", "\\\"");
+            var sysArg = string.IsNullOrEmpty(sysPrompt)
+                ? string.Empty
+                : $"-sys \"{sysPrompt.Replace("\"", "\\\"")}\" ";
 
             var psi = new ProcessStartInfo
             {
                 FileName = llamaPath,
-                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" -sys \"{escapedSys}\" -p \"{escapedPrompt}\" --single-turn --simple-io -ngl 999",
+                Arguments = $"-m \"{modelPath}\" --mmproj \"{mmprojPath}\" --image \"{imagePath}\" {sysArg}-p \"{escapedPrompt}\" --single-turn --simple-io -ngl 999",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -682,23 +709,47 @@ namespace FileTagger.Windows
             return stdout;
         }
 
-        private static async Task<string> InvokeOllama(string host, string model, string imagePath,
-            string tagList, int numCtx, CancellationToken token)
+        private static async Task<byte[]> ReadOllamaImageBytesAsync(string imagePath, CancellationToken token)
         {
-            var (sysPrompt, userPrompt) = BuildTaggingPrompts(tagList);
+            if (!Path.GetExtension(imagePath).Equals(".webp", StringComparison.OrdinalIgnoreCase))
+                return await File.ReadAllBytesAsync(imagePath, token);
 
-            var imageBase64 = Convert.ToBase64String(
-                await File.ReadAllBytesAsync(imagePath, token));
+            return await Task.Run(() => ConvertWebpToJpegBytes(imagePath), token);
+        }
+
+        private static byte[] ConvertWebpToJpegBytes(string imagePath)
+        {
+            using var stream = File.OpenRead(imagePath);
+            var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+            var frame = decoder.Frames[0];
+            var encoder = new JpegBitmapEncoder { QualityLevel = 90 };
+            encoder.Frames.Add(BitmapFrame.Create(frame));
+            using var ms = new MemoryStream();
+            encoder.Save(ms);
+            return ms.ToArray();
+        }
+
+        private static async Task<string> InvokeOllama(string host, string model, string imagePath,
+            string tagList, string customMessage, int numCtx, CancellationToken token)
+        {
+            var (sysPrompt, userPrompt) = BuildTaggingPrompts(customMessage, tagList);
+
+            var imageBytes = await ReadOllamaImageBytesAsync(imagePath, token);
+            var imageBase64 = Convert.ToBase64String(imageBytes);
+
+            object[] messages = string.IsNullOrEmpty(sysPrompt)
+                ? new object[] { new { role = "user", content = userPrompt, images = new[] { imageBase64 } } }
+                : new object[]
+                {
+                    new { role = "system", content = sysPrompt },
+                    new { role = "user", content = userPrompt, images = new[] { imageBase64 } }
+                };
 
             var requestBody = new
             {
                 model,
                 stream = false,
-                messages = new object[]
-                {
-                    new { role = "system", content = sysPrompt },
-                    new { role = "user", content = userPrompt, images = new[] { imageBase64 } }
-                },
+                messages,
                 options = new { num_ctx = numCtx }
             };
 
