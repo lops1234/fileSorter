@@ -55,6 +55,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="70"/>
@@ -67,7 +68,12 @@
 
                 <TextBlock Grid.Row="1" Grid.Column="0" Text="Model:" VerticalAlignment="Center" Margin="0,4"/>
                 <TextBox Grid.Row="1" Grid.Column="1" x:Name="OllamaModelTextBox" Margin="5,4"
-                         ToolTip="Ollama model name, e.g. huihui_ai/gemma-4-abliterated:e4b"/>
+                         ToolTip="Ollama model name, e.g. huihui_ai/gemma-4-abliterated:12b"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Context:" VerticalAlignment="Center" Margin="0,4"/>
+                <TextBox Grid.Row="2" Grid.Column="1" x:Name="OllamaNumCtxTextBox" Margin="5,4"
+                         Text="65536"
+                         ToolTip="Context window size in tokens (num_ctx). Vision images need a large value, e.g. 65536."/>
             </Grid>
         </GroupBox>
 

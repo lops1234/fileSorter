@@ -56,6 +56,7 @@ namespace FileTagger.Windows
     {
         public string Host { get; set; } = "http://localhost:11434";
         public string Model { get; set; } = "huihui_ai/gemma-4-abliterated:12b";
+        public int NumCtx { get; set; } = 65536;
 
         private static string SettingsFilePath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -138,6 +139,7 @@ namespace FileTagger.Windows
             var o = OllamaSettings.Load();
             OllamaHostTextBox.Text = o.Host;
             OllamaModelTextBox.Text = o.Model;
+            OllamaNumCtxTextBox.Text = o.NumCtx.ToString();
         }
 
         private void SaveSettings()
@@ -152,10 +154,15 @@ namespace FileTagger.Windows
 
         private void SaveOllamaSettings()
         {
+            int.TryParse(OllamaNumCtxTextBox.Text.Trim(), out var numCtx);
+            if (numCtx <= 0)
+                numCtx = 65536;
+
             new OllamaSettings
             {
                 Host = OllamaHostTextBox.Text.Trim(),
-                Model = OllamaModelTextBox.Text.Trim()
+                Model = OllamaModelTextBox.Text.Trim(),
+                NumCtx = numCtx
             }.Save();
         }
 
@@ -403,6 +410,12 @@ namespace FileTagger.Windows
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
+            if (!int.TryParse(OllamaNumCtxTextBox.Text.Trim(), out var numCtx) || numCtx <= 0)
+            {
+                MessageBox.Show("Please specify a valid context size (num_ctx), e.g. 65536.", "Missing Setting",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
 
             SaveOllamaSettings();
 
@@ -416,6 +429,7 @@ namespace FileTagger.Windows
             Log($"Starting Ollama test for {imageFiles.Count} image(s)...");
             Log($"Host  : {host}");
             Log($"Model : {model}");
+            Log($"num_ctx: {numCtx}");
             Log(string.Empty);
 
             try
@@ -443,7 +457,7 @@ namespace FileTagger.Windows
                     string output;
                     try
                     {
-                        output = await InvokeOllama(host, model, imagePath, tagListString, token);
+                        output = await InvokeOllama(host, model, imagePath, tagListString, numCtx, token);
                     }
                     catch (OperationCanceledException)
                     {
@@ -669,7 +683,7 @@ namespace FileTagger.Windows
         }
 
         private static async Task<string> InvokeOllama(string host, string model, string imagePath,
-            string tagList, CancellationToken token)
+            string tagList, int numCtx, CancellationToken token)
         {
             var (sysPrompt, userPrompt) = BuildTaggingPrompts(tagList);
 
@@ -684,7 +698,8 @@ namespace FileTagger.Windows
                 {
                     new { role = "system", content = sysPrompt },
                     new { role = "user", content = userPrompt, images = new[] { imageBase64 } }
-                }
+                },
+                options = new { num_ctx = numCtx }
             };
 
             var url = host.TrimEnd('/') + "/api/chat";
