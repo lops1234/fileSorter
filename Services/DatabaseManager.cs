@@ -1084,6 +1084,52 @@ namespace FileTagger.Services
             return stashedIds.Count;
         }
 
+        public class RestoreDeletedTagsResult
+        {
+            public int RestoredCount { get; set; }
+            public List<string> NotFoundNames { get; set; } = new();
+        }
+
+        /// <summary>
+        /// Restores deleted-tag records whose names match the given list (case-insensitive).
+        /// Includes stashed and non-stashed deletions. Each match is restored to its saved file associations.
+        /// </summary>
+        public RestoreDeletedTagsResult RestoreDeletedTagsByNames(IEnumerable<string> tagNames)
+        {
+            var namesToRestore = tagNames
+                .Select(n => n.Trim())
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var result = new RestoreDeletedTagsResult();
+            if (!namesToRestore.Any())
+                return result;
+
+            using var db = new CentralDbContext();
+            var nameSet = new HashSet<string>(namesToRestore, StringComparer.OrdinalIgnoreCase);
+
+            var matching = db.DeletedTags
+                .AsEnumerable()
+                .Where(dt => nameSet.Contains(dt.Name))
+                .Select(dt => new { dt.Id, dt.Name })
+                .ToList();
+
+            var foundNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in matching)
+            {
+                RestoreDeletedTag(item.Id);
+                foundNames.Add(item.Name);
+                result.RestoredCount++;
+            }
+
+            result.NotFoundNames = namesToRestore
+                .Where(n => !foundNames.Contains(n))
+                .ToList();
+
+            return result;
+        }
+
         /// <summary>Removes all local CentralDeletedTag records (and their file snapshots).</summary>
         public void CleanupLocalDeletedTags()
         {

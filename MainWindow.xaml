@@ -110,6 +110,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
@@ -131,7 +132,19 @@
                         <TextBlock x:Name="TagCountLabel" VerticalAlignment="Center" Margin="15,0,0,0" Foreground="Gray"/>
                     </StackPanel>
 
-                    <DataGrid Grid.Row="3" x:Name="TagsDataGrid" AutoGenerateColumns="False" 
+                    <StackPanel Grid.Row="3" Margin="0,10,0,0">
+                        <TextBlock Text="Restore deleted tags (comma-separated):" Margin="0,0,0,4"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBox x:Name="RestoreDeletedTagsTextBox" Width="500" MinHeight="72" MaxHeight="120"
+                                     TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                                     ToolTip="Paste comma-separated tag names to restore from deleted tags with their file associations"/>
+                            <Button x:Name="RestoreDeletedTagsButton" Content="↩ Restore Tags" Click="RestoreDeletedTags_Click"
+                                    Margin="8,0,0,0" Padding="10,4" VerticalAlignment="Top" Background="#E8F8E8" BorderBrush="#88C888"
+                                    ToolTip="Find matching deleted tags, restore them to their images, and remove from deleted list"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <DataGrid Grid.Row="4" x:Name="TagsDataGrid" AutoGenerateColumns="False"
                               CanUserAddRows="False" CanUserDeleteRows="False" 
                               SelectionMode="Single" Margin="0,10,0,10"
                               BeginningEdit="TagsDataGrid_BeginningEdit"
@@ -145,7 +158,7 @@
                         </DataGrid.Columns>
                     </DataGrid>
 
-                    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="AutoTagImagesButton" Content="🤖 Auto Tag with AI" Click="AutoTagImages_Click"
                                 Margin="0,0,10,0" FontWeight="Bold"
                                 ToolTip="Automatically tag images using a local LLaMA vision model"/>

@@ -985,6 +985,64 @@ namespace FileTagger
             }
         }
 
+        private void RestoreDeletedTags_Click(object sender, RoutedEventArgs e)
+        {
+            var input = RestoreDeletedTagsTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                MessageBox.Show("Paste comma-separated tag names to restore.", "Restore Deleted Tags",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var tagNames = input.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(n => n.Trim())
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .ToList();
+
+            if (!tagNames.Any())
+            {
+                MessageBox.Show("No valid tag names found in the input.", "Restore Deleted Tags",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                $"Restore {tagNames.Count} tag name(s) from deleted tags?\n\n" +
+                string.Join(", ", tagNames.Take(10)) +
+                (tagNames.Count > 10 ? $", ... (+{tagNames.Count - 10} more)" : ""),
+                "Restore Deleted Tags", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+            if (confirm != MessageBoxResult.Yes)
+                return;
+
+            try
+            {
+                var restoreResult = DatabaseManager.Instance.RestoreDeletedTagsByNames(tagNames);
+                LoadTags();
+                LoadTagFilter();
+
+                var message = restoreResult.RestoredCount > 0
+                    ? $"Restored {restoreResult.RestoredCount} deleted tag record(s) with their file associations."
+                    : "No matching deleted tags were found.";
+
+                if (restoreResult.NotFoundNames.Any())
+                {
+                    message += "\n\nNot found in deleted tags:\n" +
+                                string.Join(", ", restoreResult.NotFoundNames);
+                }
+
+                MessageBox.Show(message, "Restore Complete",
+                    MessageBoxButton.OK,
+                    restoreResult.RestoredCount > 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error restoring deleted tags: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private void AutoTagImages_Click(object sender, RoutedEventArgs e)
         {
             var window = new AutoTagWindow();
