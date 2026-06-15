@@ -104,7 +104,8 @@
                 <CheckBox x:Name="OnlyDbTagsCheckBox" Margin="0,8,0,0"
                           Content="Only tags from database (validate LLM output against existing tags)" IsChecked="True"/>
                 <CheckBox x:Name="RetagTaggedFilesCheckBox" Margin="0,6,0,0"
-                          Content="Retag tagged files (include files already auto-tagged by AI)" IsChecked="False"/>
+                          Content="Retag tagged files (re-run files already auto-tagged by AI)" IsChecked="False"
+                          ToolTip="When checked, also re-process files that already have AI-Tagged-Unchecked plus content tags. Existing tags are never removed — only new tags are added."/>
             </StackPanel>
         </GroupBox>
 

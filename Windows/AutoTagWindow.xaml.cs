@@ -305,17 +305,24 @@ namespace FileTagger.Windows
 
         private static bool ShouldIncludeFileForTagging(string filePath, bool retagTagged)
         {
+            // Auto-tagging only adds tags — existing tags are never removed.
             var tags = DatabaseManager.Instance.GetTagsForFile(filePath);
             if (tags.Count == 0)
                 return true;
 
-            if (tags.All(t => t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase)))
+            var hasAiMarker = tags.Any(t => t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase));
+            var hasRealTags = tags.Any(t => !t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase));
+
+            // Manual tags only — include so AI can add more without removing current tags.
+            if (hasRealTags && !hasAiMarker)
                 return true;
 
-            if (retagTagged && tags.Any(t => t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase)))
+            // Only the AI marker, no content tags yet.
+            if (!hasRealTags)
                 return true;
 
-            return false;
+            // Already AI-tagged (marker + content tags) — re-run only when retag is enabled.
+            return retagTagged;
         }
 
         private void BeginRun(int imageCount)
@@ -684,7 +691,9 @@ namespace FileTagger.Windows
                 Log($"  Added {newTags.Count} tag(s): {string.Join(", ", newTags)}");
             }
 
-            DatabaseManager.Instance.AddTagToFile(imagePath, AiTaggedUnchecked);
+            if (!existingFileTags.Contains(AiTaggedUnchecked))
+                DatabaseManager.Instance.AddTagToFile(imagePath, AiTaggedUnchecked);
+
             return added;
         }
 
