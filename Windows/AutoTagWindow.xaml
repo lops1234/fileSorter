@@ -101,11 +101,18 @@
                 <TextBox x:Name="CustomMessageTextBox" MinHeight="44" MaxHeight="80"
                          TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
                          ToolTip="If filled, only this message is sent to the model — no system or default prompts."/>
+                <TextBlock Text="Possible tags (comma-separated):" Margin="0,8,0,4"/>
+                <TextBox x:Name="PossibleTagsTextBox" MinHeight="44" MaxHeight="80"
+                         TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                         ToolTip="Allowed tags for Ollama responses. Matching tags are saved; if none match, AIFailedToTag is added."/>
                 <CheckBox x:Name="OnlyDbTagsCheckBox" Margin="0,8,0,0"
                           Content="Only tags from database (validate LLM output against existing tags)" IsChecked="True"/>
                 <CheckBox x:Name="RetagTaggedFilesCheckBox" Margin="0,6,0,0"
                           Content="Retag tagged files (re-run files already auto-tagged by AI)" IsChecked="False"
                           ToolTip="When checked, also re-process files that already have AI-Tagged-Unchecked plus content tags. Existing tags are never removed — only new tags are added."/>
+                <CheckBox x:Name="TagOnlyFailedCheckBox" Margin="0,6,0,0"
+                          Content="Tag only failed to tag (process files with AIFailedToTag only)" IsChecked="False"
+                          ToolTip="When checked, only images marked AIFailedToTag are processed. On success, AIFailedToTag is removed."/>
             </StackPanel>
         </GroupBox>
 

@@ -24,6 +24,17 @@ namespace FileTagger.Windows
         public string ModelPath { get; set; } = string.Empty;
         public string MmprojPath { get; set; } = string.Empty;
         public string CustomMessage { get; set; } = DefaultCustomMessage;
+        public string PossibleTags { get; set; } = DefaultPossibleTags;
+
+        public static string DefaultPossibleTags
+        {
+            get
+            {
+                const string prefix = "Use tags only from provided list: ";
+                var idx = DefaultCustomMessage.IndexOf(prefix, StringComparison.Ordinal);
+                return idx >= 0 ? DefaultCustomMessage[(idx + prefix.Length)..] : string.Empty;
+            }
+        }
 
         private static string SettingsFilePath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -98,13 +109,14 @@ namespace FileTagger.Windows
     public partial class AutoTagWindow : Window
     {
         private const string AiTaggedUnchecked = "AI-Tagged-Unchecked";
+        private const string AiFailedToTag = "AIFailedToTag";
         private const string GifTag = "Gif";
         private const string BasicPromt = "List sexual content and sexual activities tags for this image";
 
         private static readonly HashSet<string> ImageExtensions =
             new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp", ".gif" };
 
-        private static readonly HttpClient OllamaHttp = new() { Timeout = TimeSpan.FromMinutes(10) };
+        private static readonly HttpClient OllamaHttp = new() { Timeout = TimeSpan.FromMinutes(20) };
 
         private CancellationTokenSource _cts;
         private bool _isRunning;
@@ -144,6 +156,9 @@ namespace FileTagger.Windows
             CustomMessageTextBox.Text = string.IsNullOrEmpty(s.CustomMessage)
                 ? LlamaSettings.DefaultCustomMessage
                 : s.CustomMessage;
+            PossibleTagsTextBox.Text = string.IsNullOrEmpty(s.PossibleTags)
+                ? LlamaSettings.DefaultPossibleTags
+                : s.PossibleTags;
 
             var o = OllamaSettings.Load();
             OllamaHostTextBox.Text = o.Host;
@@ -158,11 +173,15 @@ namespace FileTagger.Windows
                 LlamaPath = LlamaPathTextBox.Text.Trim(),
                 ModelPath = ModelPathTextBox.Text.Trim(),
                 MmprojPath = MmprojPathTextBox.Text.Trim(),
-                CustomMessage = CustomMessageTextBox.Text.Trim()
+                CustomMessage = CustomMessageTextBox.Text.Trim(),
+                PossibleTags = PossibleTagsTextBox.Text.Trim()
             }.Save();
         }
 
         private string GetCustomMessage() => CustomMessageTextBox.Text.Trim();
+
+        private List<string> GetPossibleTags() =>
+            ParseCommaSeparatedTags(PossibleTagsTextBox.Text);
 
         private void SaveOllamaSettings()
         {
@@ -236,7 +255,8 @@ namespace FileTagger.Windows
 
         #region Start / Cancel
 
-        private bool TryCollectImageFiles(out List<string> imageFiles, bool retagTagged = false)
+        private bool TryCollectImageFiles(out List<string> imageFiles, bool retagTagged = false,
+            bool tagOnlyFailed = false)
         {
             imageFiles = new List<string>();
 
@@ -253,6 +273,12 @@ namespace FileTagger.Windows
                 {
                     MessageBox.Show("The selected file is not a supported image type.", "Invalid File",
                         MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                if (tagOnlyFailed && !HasFailedToTag(imagePath))
+                {
+                    MessageBox.Show("The selected file does not have the AIFailedToTag tag.", "No Failed Tag",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
                     return false;
                 }
                 imageFiles = new List<string> { imagePath };
@@ -287,14 +313,16 @@ namespace FileTagger.Windows
                 .Where(Directory.Exists)
                 .SelectMany(d => Directory.GetFiles(d, "*", SearchOption.AllDirectories))
                 .Where(f => ImageExtensions.Contains(Path.GetExtension(f)))
-                .Where(f => ShouldIncludeFileForTagging(f, retagTagged))
+                .Where(f => ShouldIncludeFileForTagging(f, retagTagged, tagOnlyFailed))
                 .ToList();
 
             if (!imageFiles.Any())
             {
-                var message = retagTagged
-                    ? "No image files found in the selected directories."
-                    : "No untagged image files found in the selected directories.";
+                var message = tagOnlyFailed
+                    ? "No image files with AIFailedToTag found in the selected directories."
+                    : retagTagged
+                        ? "No image files found in the selected directories."
+                        : "No untagged image files found in the selected directories.";
                 MessageBox.Show(message, "No Images",
                     MessageBoxButton.OK, MessageBoxImage.Information);
                 return false;
@@ -303,21 +331,32 @@ namespace FileTagger.Windows
             return true;
         }
 
-        private static bool ShouldIncludeFileForTagging(string filePath, bool retagTagged)
+        private static bool HasFailedToTag(string filePath) =>
+            DatabaseManager.Instance.GetTagsForFile(filePath)
+                .Any(t => t.Equals(AiFailedToTag, StringComparison.OrdinalIgnoreCase));
+
+        private static bool IsAutoTagMarker(string tag) =>
+            tag.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase) ||
+            tag.Equals(AiFailedToTag, StringComparison.OrdinalIgnoreCase);
+
+        private static bool ShouldIncludeFileForTagging(string filePath, bool retagTagged, bool tagOnlyFailed)
         {
+            if (tagOnlyFailed)
+                return HasFailedToTag(filePath);
+
             // Auto-tagging only adds tags — existing tags are never removed.
             var tags = DatabaseManager.Instance.GetTagsForFile(filePath);
             if (tags.Count == 0)
                 return true;
 
             var hasAiMarker = tags.Any(t => t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase));
-            var hasRealTags = tags.Any(t => !t.Equals(AiTaggedUnchecked, StringComparison.OrdinalIgnoreCase));
+            var hasRealTags = tags.Any(t => !IsAutoTagMarker(t));
 
             // Manual tags only — include so AI can add more without removing current tags.
             if (hasRealTags && !hasAiMarker)
                 return true;
 
-            // Only the AI marker, no content tags yet.
+            // Only auto-tag markers, no content tags yet.
             if (!hasRealTags)
                 return true;
 
@@ -381,7 +420,8 @@ namespace FileTagger.Windows
             SaveSettings();
 
             var retagTagged = RetagTaggedFilesCheckBox.IsChecked == true;
-            if (!TryCollectImageFiles(out var imageFiles, retagTagged))
+            var tagOnlyFailed = TagOnlyFailedCheckBox.IsChecked == true;
+            if (!TryCollectImageFiles(out var imageFiles, retagTagged, tagOnlyFailed))
                 return;
 
             BeginRun(imageFiles.Count);
@@ -449,7 +489,8 @@ namespace FileTagger.Windows
             SaveSettings();
 
             var retagTagged = RetagTaggedFilesCheckBox.IsChecked == true;
-            if (!TryCollectImageFiles(out var imageFiles, retagTagged))
+            var tagOnlyFailed = TagOnlyFailedCheckBox.IsChecked == true;
+            if (!TryCollectImageFiles(out var imageFiles, retagTagged, tagOnlyFailed))
                 return;
 
             BeginRun(imageFiles.Count);
@@ -466,7 +507,8 @@ namespace FileTagger.Windows
             {
                 bool onlyDbTags = OnlyDbTagsCheckBox.IsChecked == true;
                 var customMessage = GetCustomMessage();
-                await RunOllamaAutoTagging(host, model, imageFiles, onlyDbTags, customMessage, numCtx, token);
+                var possibleTags = GetPossibleTags();
+                await RunOllamaAutoTagging(host, model, imageFiles, onlyDbTags, customMessage, possibleTags, numCtx, token);
             }
             catch (OperationCanceledException)
             {
@@ -563,10 +605,11 @@ namespace FileTagger.Windows
         }
 
         private async Task RunOllamaAutoTagging(string host, string model, List<string> imageFiles,
-            bool onlyDbTags, string customMessage, int numCtx, CancellationToken token)
+            bool onlyDbTags, string customMessage, List<string> possibleTags, int numCtx, CancellationToken token)
         {
             int processed = 0;
             int tagsAdded = 0;
+            var usePossibleTags = possibleTags.Count > 0;
 
             foreach (var imagePath in imageFiles)
             {
@@ -578,14 +621,14 @@ namespace FileTagger.Windows
                 if (IsGifFile(imagePath))
                 {
                     Log("  GIF detected — tagging without Ollama.");
-                    tagsAdded += ApplyMatchedTagsToFile(imagePath, new List<string> { GifTag });
+                    tagsAdded += ApplyMatchedTagsToFile(imagePath, new List<string> { GifTag }, clearFailedTag: true);
                     UpdateProgress(++processed, imageFiles.Count);
                     continue;
                 }
 
                 var allTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
 
-                if (onlyDbTags && !allTagNames.Any() && string.IsNullOrEmpty(customMessage))
+                if (!usePossibleTags && onlyDbTags && !allTagNames.Any() && string.IsNullOrEmpty(customMessage))
                 {
                     Log("  [SKIP] No tags in database to match against.");
                     UpdateProgress(++processed, imageFiles.Count);
@@ -618,14 +661,26 @@ namespace FileTagger.Windows
 
                 if (string.IsNullOrWhiteSpace(output))
                 {
-                    Log("  [SKIP] Empty output from Ollama.");
+                    if (usePossibleTags)
+                        ApplyFailedTagToFile(imagePath);
+                    else
+                        Log("  [SKIP] Empty output from Ollama.");
                     UpdateProgress(++processed, imageFiles.Count);
                     continue;
                 }
 
-                var parsedTokens = ParseCommaSeparatedTags(output);
-
-                if (!TryResolveMatchedTags(parsedTokens, onlyDbTags, allTagNames, out var matchedTags))
+                List<string> matchedTags;
+                if (usePossibleTags)
+                {
+                    matchedTags = ExtractPossibleTagsFromResponse(output, possibleTags);
+                    if (!matchedTags.Any())
+                    {
+                        ApplyFailedTagToFile(imagePath);
+                        UpdateProgress(++processed, imageFiles.Count);
+                        continue;
+                    }
+                }
+                else if (!TryResolveMatchedTags(ParseCommaSeparatedTags(output), onlyDbTags, allTagNames, out matchedTags))
                 {
                     Log(onlyDbTags
                         ? "  No tags from the database matched the output."
@@ -634,7 +689,7 @@ namespace FileTagger.Windows
                     continue;
                 }
 
-                tagsAdded += ApplyMatchedTagsToFile(imagePath, matchedTags);
+                tagsAdded += ApplyMatchedTagsToFile(imagePath, matchedTags, clearFailedTag: true);
 
                 UpdateProgress(++processed, imageFiles.Count);
             }
@@ -666,7 +721,24 @@ namespace FileTagger.Windows
             return matchedTags.Any();
         }
 
-        private int ApplyMatchedTagsToFile(string imagePath, List<string> matchedTags)
+        private static List<string> ExtractPossibleTagsFromResponse(string output, IReadOnlyList<string> possibleTags)
+        {
+            var found = new List<string>();
+            foreach (var tag in possibleTags.OrderByDescending(t => t.Length))
+            {
+                if (output.IndexOf(tag, StringComparison.OrdinalIgnoreCase) < 0)
+                    continue;
+
+                if (found.Any(f => f.Equals(tag, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
+                found.Add(tag);
+            }
+
+            return found;
+        }
+
+        private int ApplyMatchedTagsToFile(string imagePath, List<string> matchedTags, bool clearFailedTag = false)
         {
             Log($"  Tags: {string.Join(", ", matchedTags)}");
 
@@ -691,10 +763,28 @@ namespace FileTagger.Windows
                 Log($"  Added {newTags.Count} tag(s): {string.Join(", ", newTags)}");
             }
 
+            if (clearFailedTag && existingFileTags.Contains(AiFailedToTag))
+            {
+                DatabaseManager.Instance.RemoveTagFromFile(imagePath, AiFailedToTag);
+                Log("  Removed AIFailedToTag.");
+            }
+
             if (!existingFileTags.Contains(AiTaggedUnchecked))
                 DatabaseManager.Instance.AddTagToFile(imagePath, AiTaggedUnchecked);
 
             return added;
+        }
+
+        private void ApplyFailedTagToFile(string imagePath)
+        {
+            Log("  No matching possible tags in Ollama response — adding AIFailedToTag.");
+
+            var existingFileTags = new HashSet<string>(
+                DatabaseManager.Instance.GetTagsForFile(imagePath),
+                StringComparer.OrdinalIgnoreCase);
+
+            if (!existingFileTags.Contains(AiFailedToTag))
+                DatabaseManager.Instance.AddTagToFile(imagePath, AiFailedToTag);
         }
 
         private static (string sysPrompt, string userPrompt) BuildTaggingPrompts(string customMessage, string tagList)
