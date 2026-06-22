@@ -655,8 +655,11 @@ namespace FileTagger.Windows
                 }
                 catch (Exception ex)
                 {
-                    Log($"\n[ERROR] Ollama request failed — stopping.\n{ex.Message}");
-                    throw;
+                    Log($"  [ERROR] Ollama request failed: {ex.Message}");
+                    ApplyFailedTagToFile(imagePath, log: false);
+                    Log("  Added AIFailedToTag — continuing with next file.");
+                    UpdateProgress(++processed, imageFiles.Count);
+                    continue;
                 }
 
                 if (string.IsNullOrWhiteSpace(output))
@@ -775,9 +778,10 @@ namespace FileTagger.Windows
             return added;
         }
 
-        private void ApplyFailedTagToFile(string imagePath)
+        private void ApplyFailedTagToFile(string imagePath, bool log = true)
         {
-            Log("  No matching possible tags in Ollama response — adding AIFailedToTag.");
+            if (log)
+                Log("  No matching possible tags in Ollama response — adding AIFailedToTag.");
 
             var existingFileTags = new HashSet<string>(
                 DatabaseManager.Instance.GetTagsForFile(imagePath),
