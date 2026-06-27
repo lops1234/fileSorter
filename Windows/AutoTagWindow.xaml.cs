@@ -183,6 +183,27 @@ namespace FileTagger.Windows
         private List<string> GetPossibleTags() =>
             ParseCommaSeparatedTags(PossibleTagsTextBox.Text);
 
+        private static List<string> ResolveAllowedTagsForOllama(
+            List<string> possibleTags, string customMessage, List<string> allTagNames, bool onlyDbTags)
+        {
+            if (possibleTags.Count > 0)
+                return possibleTags;
+
+            const string prefix = "Use tags only from provided list: ";
+            var idx = customMessage.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+            {
+                var fromMessage = ParseCommaSeparatedTags(customMessage[(idx + prefix.Length)..]);
+                if (fromMessage.Count > 0)
+                    return fromMessage;
+            }
+
+            if (onlyDbTags && allTagNames.Count > 0)
+                return allTagNames;
+
+            return new List<string>();
+        }
+
         private void SaveOllamaSettings()
         {
             int.TryParse(OllamaNumCtxTextBox.Text.Trim(), out var numCtx);
@@ -609,7 +630,6 @@ namespace FileTagger.Windows
         {
             int processed = 0;
             int tagsAdded = 0;
-            var usePossibleTags = possibleTags.Count > 0;
 
             foreach (var imagePath in imageFiles)
             {
@@ -627,8 +647,10 @@ namespace FileTagger.Windows
                 }
 
                 var allTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
+                var allowedTags = ResolveAllowedTagsForOllama(possibleTags, customMessage, allTagNames, onlyDbTags);
+                var filterByAllowedTags = allowedTags.Count > 0;
 
-                if (!usePossibleTags && onlyDbTags && !allTagNames.Any() && string.IsNullOrEmpty(customMessage))
+                if (!filterByAllowedTags && onlyDbTags && !allTagNames.Any() && string.IsNullOrEmpty(customMessage))
                 {
                     Log("  [SKIP] No tags in database to match against.");
                     UpdateProgress(++processed, imageFiles.Count);
@@ -664,7 +686,7 @@ namespace FileTagger.Windows
 
                 if (string.IsNullOrWhiteSpace(output))
                 {
-                    if (usePossibleTags)
+                    if (filterByAllowedTags)
                         ApplyFailedTagToFile(imagePath);
                     else
                         Log("  [SKIP] Empty output from Ollama.");
@@ -673,9 +695,9 @@ namespace FileTagger.Windows
                 }
 
                 List<string> matchedTags;
-                if (usePossibleTags)
+                if (filterByAllowedTags)
                 {
-                    matchedTags = ExtractPossibleTagsFromResponse(output, possibleTags);
+                    matchedTags = ExtractPossibleTagsFromResponse(output, allowedTags);
                     if (!matchedTags.Any())
                     {
                         ApplyFailedTagToFile(imagePath);
