@@ -252,7 +252,12 @@ namespace FileTagger.Services
         /// Used by PushToFolder to pull remote changes before building the new remote DB
         /// without triggering an infinite push→pull→push recursion.
         /// </param>
-        public PullResult PullFromFolder(string directoryPath, bool skipBootstrap = false)
+        /// <param name="skipConnectionRelease">
+        /// When true, skips ReleaseAllDatabaseConnections in finally.
+        /// Used when PullFromFolder is called from PushToFolder so the push context stays valid.
+        /// </param>
+        public PullResult PullFromFolder(string directoryPath, bool skipBootstrap = false,
+            bool skipConnectionRelease = false)
         {
             var result = new PullResult { DirectoryPath = directoryPath };
 
@@ -266,6 +271,12 @@ namespace FileTagger.Services
                 if (centralDir == null)
                 {
                     result.Errors.Add($"Directory not found in watched directories: {directoryPath}");
+                    return result;
+                }
+
+                if (!Directory.Exists(directoryPath))
+                {
+                    result.Errors.Add($"Watched directory does not exist: {directoryPath}");
                     return result;
                 }
 
@@ -294,7 +305,7 @@ namespace FileTagger.Services
                 }
 
                 // No folder database exists at all — bootstrap one by pushing central data to the folder.
-                if (result.DatabasesFound == 0 && !skipBootstrap)
+                if (result.DatabasesPulled == 0 && !skipBootstrap)
                 {
                     var pushResult = PushToFolder(directoryPath);
                     result.WasBootstrapped = true;
@@ -314,8 +325,8 @@ namespace FileTagger.Services
             }
             finally
             {
-                // Release all connections after pull to allow subsequent delete operations
-                ReleaseAllDatabaseConnections();
+                if (!skipConnectionRelease)
+                    ReleaseAllDatabaseConnections();
             }
 
             return result;
@@ -334,25 +345,44 @@ namespace FileTagger.Services
 
             try
             {
+                if (!Directory.Exists(directoryPath))
+                {
+                    result.Errors.Add($"Watched directory does not exist: {directoryPath}");
+                    return result;
+                }
+
                 using var centralDb = new CentralDbContext();
 
-                // Pull remote changes first so we don't overwrite work done on other machines.
-                // skipBootstrap = true prevents recursion when there is no remote DB yet.
-                var syncPull = PullFromFolder(directoryPath, skipBootstrap: true);
-                if (syncPull.Errors.Any())
-                    result.Errors.AddRange(syncPull.Errors.Select(e => $"[pre-push pull] {e}"));
-
-                // Load directory, tags, file records, and file-tag associations in separate
-                // queries.  A single query with Include(Tags).Include(FileRecords).ThenInclude(FileTags)
-                // produces a cartesian JOIN (Tags × FileRecords × FileTags) that can return
-                // millions of rows for large directories and triggers the SQLite error.
                 var centralDir = centralDb.Directories
-                    .FirstOrDefault(d => d.DirectoryPath == directoryPath);
+                    .FirstOrDefault(d => d.DirectoryPath.ToLower() == directoryPath.ToLower());
 
                 if (centralDir == null)
                 {
                     result.Errors.Add($"Directory not found in watched directories: {directoryPath}");
                     return result;
+                }
+
+                var targetFileTaggerDir = Path.Combine(directoryPath, ".filetagger");
+                var targetDbPath = Path.Combine(targetFileTaggerDir, "tags.db");
+                var folderDatabaseExisted = File.Exists(targetDbPath);
+
+                // Only pull remote changes when a folder database already exists.
+                // Skipping this when there is no remote DB avoids unnecessary pull work and
+                // prevents connection-pool clearing from breaking the push context below.
+                if (HasPullableFolderDatabase(directoryPath))
+                {
+                    var syncPull = PullFromFolder(directoryPath, skipBootstrap: true, skipConnectionRelease: true);
+                    if (syncPull.Errors.Any())
+                        result.Errors.AddRange(syncPull.Errors.Select(e => $"[pre-push pull] {e}"));
+
+                    centralDb.ChangeTracker.Clear();
+                    centralDir = centralDb.Directories
+                        .FirstOrDefault(d => d.DirectoryPath.ToLower() == directoryPath.ToLower());
+                    if (centralDir == null)
+                    {
+                        result.Errors.Add($"Directory not found in watched directories: {directoryPath}");
+                        return result;
+                    }
                 }
 
                 // Deleted-tag names for this directory — excluded from the push and written
@@ -374,9 +404,13 @@ namespace FileTagger.Services
                     .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
                     .ToList();
 
-                // Collect deleted-tag entries (name + timestamp) to write to remote
+                // Collect deleted-tag entries (name + timestamp) to write to remote.
+                // Deduplicate by name — central DeletedTags may contain multiple rows per tag.
                 var deletedTagsToPropagate = centralDb.DeletedTags
                     .Where(dt => dt.DirectoryId == centralDir.Id)
+                    .AsEnumerable()
+                    .GroupBy(dt => dt.Name, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.OrderByDescending(dt => dt.DeletedAt).First())
                     .Select(dt => new { dt.Name, dt.DeletedAt })
                     .ToList();
 
@@ -438,8 +472,14 @@ namespace FileTagger.Services
                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
                     foreach (var del in deletedTagsToPropagate)
                     {
-                        if (!existingDeleted.Contains(del.Name))
-                            folderDb.LocalDeletedTags.Add(new LocalDeletedTag { Name = del.Name, DeletedAt = del.DeletedAt });
+                        if (!existingDeleted.Add(del.Name))
+                            continue;
+
+                        folderDb.LocalDeletedTags.Add(new LocalDeletedTag
+                        {
+                            Name = del.Name,
+                            DeletedAt = del.DeletedAt
+                        });
                     }
 
                     // Export file records
@@ -509,25 +549,34 @@ namespace FileTagger.Services
                 // folderDb is fully disposed here; the SQLite file is closed and unlocked.
                 // No ClearAllPools() — that would also kill centralDb's connection.
 
-                var targetFileTaggerDir = Path.Combine(directoryPath, ".filetagger");
-                if (!Directory.Exists(targetFileTaggerDir))
-                    Directory.CreateDirectory(targetFileTaggerDir);
-
-                var targetDbPath = Path.Combine(targetFileTaggerDir, "tags.db");
+                Directory.CreateDirectory(targetFileTaggerDir);
                 File.Copy(tempDbPath, targetDbPath, overwrite: true);
 
-                centralDir.LastSyncAt = DateTime.UtcNow;
+                if (!File.Exists(targetDbPath))
+                {
+                    result.Errors.Add($"Failed to create folder database at {targetDbPath}");
+                    return result;
+                }
 
-                // Deleted tags have been propagated to remote — clear non-stashed records for this dir.
-                // Stashed tags are kept locally so they can still be bulk-restored.
-                var propagated = centralDb.DeletedTags
-                    .Where(dt => dt.DirectoryId == centralDir.Id && !dt.StashedTags)
-                    .ToList();
-                centralDb.DeletedTags.RemoveRange(propagated);
+                result.FolderDatabaseCreated = !folderDatabaseExisted;
 
-                centralDb.SaveChanges();
+                // Only update central DB after syncing to an existing remote database.
+                // First-time push is export-only — local tags and deleted-tag records stay unchanged.
+                if (folderDatabaseExisted)
+                {
+                    centralDir.LastSyncAt = DateTime.UtcNow;
 
-                result.Success = true;
+                    // Deleted tags have been propagated to remote — clear non-stashed records for this dir.
+                    // Stashed tags are kept locally so they can still be bulk-restored.
+                    var propagated = centralDb.DeletedTags
+                        .Where(dt => dt.DirectoryId == centralDir.Id && !dt.StashedTags)
+                        .ToList();
+                    centralDb.DeletedTags.RemoveRange(propagated);
+
+                    centralDb.SaveChanges();
+                }
+
+                result.Success = result.Errors.Count == 0;
             }
             catch (Exception ex)
             {
@@ -1659,6 +1708,9 @@ namespace FileTagger.Services
         private List<string> FindAllFileTaggerDirectories(string directoryPath)
         {
             var result = new List<string>();
+            if (!Directory.Exists(directoryPath))
+                return result;
+
             var baseDir = Path.Combine(directoryPath, ".filetagger");
 
             if (Directory.Exists(baseDir))
@@ -1686,6 +1738,25 @@ namespace FileTagger.Services
             }
 
             return duplicates;
+        }
+
+        private static bool HasPullableFolderDatabase(string directoryPath)
+        {
+            if (!Directory.Exists(directoryPath))
+                return false;
+
+            var baseDb = Path.Combine(directoryPath, ".filetagger", "tags.db");
+            if (File.Exists(baseDb))
+                return true;
+
+            for (int i = 1; i <= 20; i++)
+            {
+                var dupDb = Path.Combine(directoryPath, $".filetagger ({i})", "tags.db");
+                if (File.Exists(dupDb))
+                    return true;
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -1989,8 +2060,7 @@ namespace FileTagger.Services
         /// </summary>
         public bool FolderDatabaseExists(string directoryPath)
         {
-            var dbPath = Path.Combine(directoryPath, ".filetagger", "tags.db");
-            return File.Exists(dbPath);
+            return HasPullableFolderDatabase(directoryPath);
         }
 
         /// <summary>
@@ -2034,6 +2104,7 @@ namespace FileTagger.Services
         public int TagsExported { get; set; }
         public int FilesExported { get; set; }
         public int AssociationsExported { get; set; }
+        public bool FolderDatabaseCreated { get; set; }
         public List<string> Errors { get; set; } = new List<string>();
     }
 

@@ -626,6 +626,7 @@ namespace FileTagger
                     $"Directory: {selectedViewModel.DirectoryPath}\n\n" +
                     $"This will export all tags for this directory to:\n" +
                     $"{Path.Combine(selectedViewModel.DirectoryPath, ".filetagger", "tags.db")}\n\n" +
+                    $"If no folder database exists yet, one will be created.\n\n" +
                     $"Use this to backup tags or sync with another computer via cloud storage.",
                     "Push to Folder",
                     MessageBoxButton.YesNo,
@@ -642,10 +643,16 @@ namespace FileTagger
                         return DatabaseManager.Instance.PushToFolder(path);
                     });
 
-                    var message = $"Push completed!\n\n" +
-                                 $"Tags exported: {pushResult.TagsExported}\n" +
-                                 $"Files exported: {pushResult.FilesExported}\n" +
-                                 $"Associations exported: {pushResult.AssociationsExported}";
+                    var message = pushResult.FolderDatabaseCreated
+                        ? $"Folder database created!\n\n" +
+                          $"Location: {Path.Combine(path, ".filetagger", "tags.db")}\n\n" +
+                          $"Tags exported: {pushResult.TagsExported}\n" +
+                          $"Files exported: {pushResult.FilesExported}\n" +
+                          $"Associations exported: {pushResult.AssociationsExported}"
+                        : $"Push completed!\n\n" +
+                          $"Tags exported: {pushResult.TagsExported}\n" +
+                          $"Files exported: {pushResult.FilesExported}\n" +
+                          $"Associations exported: {pushResult.AssociationsExported}";
 
                     if (pushResult.Errors.Any())
                     {
@@ -653,7 +660,7 @@ namespace FileTagger
                     }
 
                     MessageBox.Show(message, "Push Complete", MessageBoxButton.OK, 
-                        pushResult.Errors.Any() ? MessageBoxImage.Warning : MessageBoxImage.Information);
+                        pushResult.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
 
                     LoadDirectories();
                 }
