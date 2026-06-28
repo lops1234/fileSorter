@@ -814,10 +814,12 @@ namespace FileTagger
         #region Tag Management
 
         private List<TagInfo> _allTags = new List<TagInfo>();
+        private List<string> _autocompleteTagNames = new List<string>();
 
         private void LoadTags()
         {
             _allTags = DatabaseManager.Instance.GetAllAvailableTags();
+            _autocompleteTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
             ApplyTagFilter();
         }
 
@@ -1693,10 +1695,8 @@ namespace FileTagger
                 return;
             }
 
-            var allTags = DatabaseManager.Instance.GetAllAvailableTags();
-            var matchingTags = allTags
-                .Where(t => t.Name.StartsWith(currentTag, StringComparison.OrdinalIgnoreCase))
-                .Select(t => t.Name)
+            var matchingTags = _autocompleteTagNames
+                .Where(name => name.StartsWith(currentTag, StringComparison.OrdinalIgnoreCase))
                 .Take(10)
                 .ToList();
 

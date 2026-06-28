@@ -13,6 +13,7 @@ namespace FileTagger.Windows
     {
         private readonly string _directoryPath;
         private List<DirectoryFileViewModel> _allFiles = new List<DirectoryFileViewModel>();
+        private List<string> _autocompleteTagNames = new List<string>();
 
         public DirectoryFilterWindow(string directoryPath)
         {
@@ -35,8 +36,7 @@ namespace FileTagger.Windows
 
         private void LoadTags()
         {
-            // Tags are now loaded dynamically for autocomplete
-            // No need to populate a combo box
+            _autocompleteTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
         }
 
         private void LoadAllFiles()
@@ -530,10 +530,8 @@ namespace FileTagger.Windows
 
         private void ShowTagSuggestions(string searchText)
         {
-            var allTags = DatabaseManager.Instance.GetAllAvailableTags();
-            var matchingTags = allTags
-                .Where(t => t.Name.StartsWith(searchText, StringComparison.OrdinalIgnoreCase))
-                .Select(t => t.Name)
+            var matchingTags = _autocompleteTagNames
+                .Where(name => name.StartsWith(searchText, StringComparison.OrdinalIgnoreCase))
                 .Take(10)
                 .ToList();
 
