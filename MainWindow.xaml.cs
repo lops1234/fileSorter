@@ -17,7 +17,8 @@ namespace FileTagger
     public partial class MainWindow : Window
     {
         private bool _isClosing = false;
-        
+        private List<string> _manageTagsFilePaths = new List<string>();
+
         // Track edited tags: OriginalName -> (NewName, NewDescription)
         private Dictionary<string, (string NewName, string NewDescription)> _editedTags = new Dictionary<string, (string, string)>();
         private string _currentEditingTagName = null;
@@ -1526,32 +1527,89 @@ namespace FileTagger
             }
         }
 
+        private void FilesDataGrid_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+        {
+            _manageTagsFilePaths = CollectSelectedFilePaths(FilesDataGrid);
+
+            if (_manageTagsFilePaths.Count == 0)
+            {
+                var row = FindParent<DataGridRow>(e.OriginalSource as DependencyObject);
+                if (row?.Item is FileViewModel vm && !string.IsNullOrWhiteSpace(vm.FilePath))
+                    _manageTagsFilePaths = new List<string> { vm.FilePath };
+            }
+        }
+
+        private static List<string> CollectSelectedFilePaths(DataGrid grid)
+        {
+            var paths = new List<string>();
+            foreach (var item in grid.SelectedItems)
+            {
+                if (item is FileViewModel vm && !string.IsNullOrWhiteSpace(vm.FilePath))
+                    paths.Add(vm.FilePath);
+            }
+
+            return paths;
+        }
+
         private void ManageFileTags_Click(object sender, RoutedEventArgs e)
         {
-            if (FilesDataGrid.SelectedItems.Count == 0)
+            try
             {
-                MessageBox.Show("Please select one or more files to manage tags.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
+                var filePaths = _manageTagsFilePaths.Count > 0
+                    ? new List<string>(_manageTagsFilePaths)
+                    : CollectSelectedFilePaths(FilesDataGrid);
 
-            // Collect all selected file paths
-            var selectedFiles = FilesDataGrid.SelectedItems.Cast<FileViewModel>().ToList();
-            var filePaths = selectedFiles.Select(f => f.FilePath).ToList();
-
-            var tagWindow = new TagManagementWindow(filePaths);
-            tagWindow.Owner = this;
-            if (tagWindow.ShowDialog() == true)
-            {
-                // Refresh tags when tags are modified
-                DatabaseManager.Instance.SynchronizeAllTags();
-                LoadTags();
-                // Refresh current search results to show updated tags
-                var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
-                if (!string.IsNullOrEmpty(searchQuery))
+                if (filePaths.Count == 0)
                 {
-                    LoadFiles(searchQuery);
+                    MessageBox.Show("Please select one or more files to manage tags.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var tagWindow = new TagManagementWindow(filePaths);
+                tagWindow.Owner = this;
+                if (tagWindow.ShowDialog() == true)
+                {
+                    DatabaseManager.Instance.SynchronizeAllTags();
+                    LoadTags();
+                    var searchQuery = TagSearchTextBox.Foreground == System.Windows.Media.Brushes.Gray ? "" : TagSearchTextBox.Text?.Trim();
+                    if (!string.IsNullOrEmpty(searchQuery))
+                    {
+                        LoadFiles(searchQuery);
+                    }
                 }
             }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error opening tag management: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void FilesDataGrid_PreviewMouseRightButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (sender is not DataGrid grid)
+                return;
+
+            var row = FindParent<DataGridRow>(e.OriginalSource as DependencyObject);
+            if (row == null)
+                return;
+
+            if (!row.IsSelected)
+            {
+                grid.SelectedItems.Clear();
+                row.IsSelected = true;
+            }
+        }
+
+        private static T FindParent<T>(DependencyObject child) where T : DependencyObject
+        {
+            while (child != null)
+            {
+                if (child is T match)
+                    return match;
+                child = System.Windows.Media.VisualTreeHelper.GetParent(child);
+            }
+
+            return null;
         }
 
         private void OpenFileFolder_Click(object sender, RoutedEventArgs e)

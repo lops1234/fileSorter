@@ -224,7 +224,9 @@
                     <DataGrid Grid.Row="2" x:Name="FilesDataGrid" AutoGenerateColumns="False" 
                               CanUserAddRows="False" CanUserDeleteRows="False" 
                               IsReadOnly="True"
-                              SelectionMode="Extended" Margin="0,10,0,0">
+                              SelectionMode="Extended" Margin="0,10,0,0"
+                              PreviewMouseRightButtonDown="FilesDataGrid_PreviewMouseRightButtonDown"
+                              ContextMenuOpening="FilesDataGrid_ContextMenuOpening">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="File Name" Binding="{Binding FileName}" Width="250"/>
                             <DataGridTextColumn Header="File Path" Binding="{Binding FilePath}" Width="400"/>

@@ -240,6 +240,30 @@ namespace FileTagger.Services
                 .ToList();
         }
 
+        private static bool TryGetRelativePathForWatchedFile(string watchedDir, string filePath, out string relativePath)
+        {
+            relativePath = string.Empty;
+            if (string.IsNullOrWhiteSpace(watchedDir) || string.IsNullOrWhiteSpace(filePath))
+                return false;
+
+            try
+            {
+                var normalizedBase = Path.GetFullPath(watchedDir.TrimEnd(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                var normalizedFile = Path.GetFullPath(filePath);
+                relativePath = Path.GetRelativePath(normalizedBase, normalizedFile);
+                return !relativePath.StartsWith("..", StringComparison.Ordinal);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string NormalizeRelativePath(string relativePath) =>
+            relativePath.Replace('/', Path.DirectorySeparatorChar)
+                .Replace('\\', Path.DirectorySeparatorChar);
+
         #endregion
 
         #region Pull/Push/Cleanup Operations
@@ -366,9 +390,12 @@ namespace FileTagger.Services
                 var targetDbPath = Path.Combine(targetFileTaggerDir, "tags.db");
                 var folderDatabaseExisted = File.Exists(targetDbPath);
 
-                // Only pull remote changes when a folder database already exists.
-                // Skipping this when there is no remote DB avoids unnecessary pull work and
-                // prevents connection-pool clearing from breaking the push context below.
+                var remoteTagSnapshot = folderDatabaseExisted
+                    ? ReadRemoteFileTagSnapshot(targetDbPath)
+                    : new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+                // Pull remote changes first, then push. Only files marked PushedNew on remote
+                // update local tags during pull; push marks files whose tags changed locally.
                 if (HasPullableFolderDatabase(directoryPath))
                 {
                     var syncPull = PullFromFolder(directoryPath, skipBootstrap: true, skipConnectionRelease: true);
@@ -404,6 +431,14 @@ namespace FileTagger.Services
                     .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
                     .ToList();
 
+                var tagsById = centralTags.ToDictionary(t => t.Id);
+                var centralTagsByFileId = centralFileTagList
+                    .GroupBy(ft => ft.FileRecordId)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => g.Select(ft => tagsById[ft.TagId].Name)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase));
+
                 // Collect deleted-tag entries (name + timestamp) to write to remote.
                 // Deduplicate by name — central DeletedTags may contain multiple rows per tag.
                 var deletedTagsToPropagate = centralDb.DeletedTags
@@ -426,6 +461,7 @@ namespace FileTagger.Services
                     // .db file is completely self-contained and safe to File.Copy anywhere.
                     folderDb.Database.ExecuteSqlRaw("PRAGMA journal_mode=DELETE");
                     folderDb.Database.EnsureCreated();
+                    EnsureFolderDbSchema((SqliteConnection)folderDb.Database.GetDbConnection());
 
                     // Export tags — skip any that are in the local deleted-tags list
                     var existingTags = folderDb.LocalTags.ToList();
@@ -493,13 +529,20 @@ namespace FileTagger.Services
 
                         if (localFile == null)
                         {
+                            var currentTags = GetCentralFileTagNames(centralFile.Id, centralTagsByFileId);
+                            remoteTagSnapshot.TryGetValue(centralFile.RelativePath, out var remoteTags);
+                            remoteTags ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            var pushedNew = !remoteTagSnapshot.ContainsKey(centralFile.RelativePath)
+                                || !TagSetsEqual(currentTags, remoteTags);
+
                             localFile = new LocalFileRecord
                             {
                                 FileName = centralFile.FileName,
                                 RelativePath = centralFile.RelativePath,
                                 LastModified = centralFile.LastModified,
                                 FileSize = centralFile.FileSize,
-                                CreatedAt = centralFile.CreatedAt
+                                CreatedAt = centralFile.CreatedAt,
+                                PushedNew = pushedNew
                             };
                             folderDb.LocalFileRecords.Add(localFile);
                             folderDb.SaveChanges();
@@ -508,12 +551,17 @@ namespace FileTagger.Services
                         }
                         else
                         {
-                            // Update if central is newer
                             if (centralFile.LastModified > localFile.LastModified)
                             {
                                 localFile.LastModified = centralFile.LastModified;
                                 localFile.FileSize = centralFile.FileSize;
                             }
+
+                            var currentTags = GetCentralFileTagNames(centralFile.Id, centralTagsByFileId);
+                            remoteTagSnapshot.TryGetValue(centralFile.RelativePath, out var remoteTags);
+                            remoteTags ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            localFile.PushedNew = !remoteTagSnapshot.ContainsKey(centralFile.RelativePath)
+                                || !TagSetsEqual(currentTags, remoteTags);
                         }
 
                         fileMapping[centralFile.Id] = localFile.Id;
@@ -706,8 +754,11 @@ namespace FileTagger.Services
             if (centralDir == null)
                 return;
 
-            var relativePath = Path.GetRelativePath(watchedDir, filePath);
+            if (!TryGetRelativePathForWatchedFile(watchedDir, filePath, out var relativePath))
+                return;
+
             var fileName = Path.GetFileName(filePath);
+            relativePath = NormalizeRelativePath(relativePath);
 
             // Get or create file record.
             // Plain == (exact match) is intentional: Path.GetRelativePath always returns the same
@@ -717,7 +768,7 @@ namespace FileTagger.Services
             // second INSERT attempt and a UNIQUE constraint violation.
             var fileRecord = centralDb.FileRecords.FirstOrDefault(f =>
                 f.DirectoryId == centralDir.Id &&
-                f.RelativePath == relativePath);
+                string.Equals(NormalizeRelativePath(f.RelativePath), relativePath, StringComparison.OrdinalIgnoreCase));
 
             if (fileRecord == null)
             {
@@ -789,11 +840,14 @@ namespace FileTagger.Services
             if (centralDir == null)
                 return;
 
-            var relativePath = Path.GetRelativePath(watchedDir, filePath);
+            if (!TryGetRelativePathForWatchedFile(watchedDir, filePath, out var relativePath))
+                return;
+
+            relativePath = NormalizeRelativePath(relativePath);
 
             var fileRecord = centralDb.FileRecords.FirstOrDefault(f =>
                 f.DirectoryId == centralDir.Id &&
-                f.RelativePath == relativePath);
+                string.Equals(NormalizeRelativePath(f.RelativePath), relativePath, StringComparison.OrdinalIgnoreCase));
 
             if (fileRecord == null)
                 return;
@@ -1246,7 +1300,7 @@ namespace FileTagger.Services
                 DirectoryPath = f.Directory.DirectoryPath,
                 LastModified = f.LastModified,
                 FileSize = f.FileSize,
-                Tags = f.FileTags.Select(ft => ft.Tag.Name).ToList()
+                Tags = f.FileTags.Where(ft => ft.Tag != null).Select(ft => ft.Tag.Name).ToList()
             })
             .OrderBy(f => f.FileName)
             .ToList();
@@ -1409,19 +1463,25 @@ namespace FileTagger.Services
             if (centralDir == null)
                 return new List<string>();
 
-            var relativePath = Path.GetRelativePath(watchedDir, filePath);
+            if (!TryGetRelativePathForWatchedFile(watchedDir, filePath, out var relativePath))
+                return new List<string>();
+
+            relativePath = NormalizeRelativePath(relativePath);
 
             var fileRecord = centralDb.FileRecords
                 .Include(f => f.FileTags)
                     .ThenInclude(ft => ft.Tag)
                 .FirstOrDefault(f =>
                     f.DirectoryId == centralDir.Id &&
-                    f.RelativePath == relativePath);
+                    string.Equals(NormalizeRelativePath(f.RelativePath), relativePath, StringComparison.OrdinalIgnoreCase));
 
             if (fileRecord == null)
                 return new List<string>();
 
-            return fileRecord.FileTags.Select(ft => ft.Tag.Name).ToList();
+            return fileRecord.FileTags
+                .Where(ft => ft.Tag != null)
+                .Select(ft => ft.Tag.Name)
+                .ToList();
         }
 
         /// <summary>
@@ -1759,6 +1819,79 @@ namespace FileTagger.Services
             return false;
         }
 
+        private static void EnsureFolderDbSchema(SqliteConnection connection)
+        {
+            try
+            {
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = "ALTER TABLE LocalFileRecords ADD COLUMN PushedNew INTEGER NOT NULL DEFAULT 0";
+                cmd.ExecuteNonQuery();
+            }
+            catch
+            {
+                // Column already exists
+            }
+        }
+
+        private static bool FolderDbHasColumn(SqliteConnection connection, string table, string column)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = $"PRAGMA table_info({table})";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static Dictionary<string, HashSet<string>> ReadRemoteFileTagSnapshot(string dbPath)
+        {
+            var result = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            if (!File.Exists(dbPath))
+                return result;
+
+            var connectionString = $"Data Source={dbPath};Mode=ReadOnly;Pooling=False";
+            using var connection = new SqliteConnection(connectionString);
+            connection.Open();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT f.RelativePath, t.Name
+                FROM LocalFileRecords f
+                LEFT JOIN LocalFileTags ft ON ft.LocalFileRecordId = f.Id
+                LEFT JOIN LocalTags t ON t.Id = ft.LocalTagId";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var path = reader.GetString(0);
+                if (!result.TryGetValue(path, out var tags))
+                {
+                    tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    result[path] = tags;
+                }
+
+                if (!reader.IsDBNull(1))
+                    tags.Add(reader.GetString(1));
+            }
+
+            return result;
+        }
+
+        private static bool TagSetsEqual(HashSet<string> left, HashSet<string> right) =>
+            left.SetEquals(right);
+
+        private static HashSet<string> GetCentralFileTagNames(
+            int fileRecordId,
+            Dictionary<int, HashSet<string>> tagsByFileId)
+        {
+            return tagsByFileId.TryGetValue(fileRecordId, out var tags)
+                ? tags
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
         /// <summary>
         /// Force release all SQLite connections to allow file deletion
         /// </summary>
@@ -1829,6 +1962,7 @@ namespace FileTagger.Services
 
             List<LocalTag> localTags;
             List<LocalFileRecord> localFiles;
+            var useSelectiveFileSync = false;
             // Tag names recorded as deleted in the remote DB
             var remoteDeletedTagNames = new List<(string Name, DateTime DeletedAt)>();
 
@@ -1839,6 +1973,7 @@ namespace FileTagger.Services
             using (var connection = new SqliteConnection(connectionString))
             {
                 connection.Open();
+                useSelectiveFileSync = FolderDbHasColumn(connection, "LocalFileRecords", "PushedNew");
 
                 // Read remote-deleted tags (table may not exist in older DBs — handle gracefully)
                 try
@@ -1871,8 +2006,11 @@ namespace FileTagger.Services
 
                     folderDb.Database.CloseConnection();
                 }
-                
+
                 connection.Close();
+
+                if (useSelectiveFileSync)
+                    localFiles = localFiles.Where(f => f.PushedNew).ToList();
             }
             
             // Clear the connection from pool immediately
@@ -1933,8 +2071,14 @@ namespace FileTagger.Services
                 .Where(t => t.DirectoryId == centralDir.Id)
                 .ToList();
             var tagMapping = new Dictionary<int, int>();
+            var neededTagIds = useSelectiveFileSync
+                ? localFiles.SelectMany(f => f.LocalFileTags).Select(ft => ft.LocalTagId).ToHashSet()
+                : null;
+            var tagsToImport = useSelectiveFileSync
+                ? localTags.Where(t => neededTagIds!.Contains(t.Id)).ToList()
+                : localTags;
 
-            foreach (var localTag in localTags)
+            foreach (var localTag in tagsToImport)
             {
                 // Don't re-import a tag we've already deleted locally
                 if (localDeletedNames.Contains(localTag.Name))
@@ -2009,34 +2153,67 @@ namespace FileTagger.Services
             }
 
             // Import associations
-            var existingAssociations = centralDb.FileTags
-                .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
-                .Select(ft => new { ft.FileRecordId, ft.TagId })
-                .ToHashSet();
-
-            foreach (var localFile in localFiles)
+            if (useSelectiveFileSync)
             {
-                if (!fileMapping.ContainsKey(localFile.Id))
-                    continue;
-
-                var newFileId = fileMapping[localFile.Id];
-
-                foreach (var localFileTag in localFile.LocalFileTags)
+                foreach (var localFile in localFiles)
                 {
-                    if (!tagMapping.ContainsKey(localFileTag.LocalTagId))
+                    if (!fileMapping.ContainsKey(localFile.Id))
                         continue;
 
-                    var newTagId = tagMapping[localFileTag.LocalTagId];
+                    var centralFileId = fileMapping[localFile.Id];
+                    var centralFile = centralDb.FileRecords
+                        .Include(f => f.FileTags)
+                        .First(f => f.Id == centralFileId);
 
-                    var assocKey = new { FileRecordId = newFileId, TagId = newTagId };
-                    if (!existingAssociations.Any(a => a.FileRecordId == newFileId && a.TagId == newTagId))
+                    if (centralFile.FileTags.Count > 0)
                     {
+                        centralDb.FileTags.RemoveRange(centralFile.FileTags.ToList());
+                    }
+
+                    foreach (var localFileTag in localFile.LocalFileTags)
+                    {
+                        if (!tagMapping.ContainsKey(localFileTag.LocalTagId))
+                            continue;
+
                         centralDb.FileTags.Add(new CentralFileTag
                         {
-                            FileRecordId = newFileId,
-                            TagId = newTagId
+                            FileRecordId = centralFileId,
+                            TagId = tagMapping[localFileTag.LocalTagId]
                         });
                         associationsImported++;
+                    }
+                }
+            }
+            else
+            {
+                var existingAssociations = centralDb.FileTags
+                    .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
+                    .Select(ft => new { ft.FileRecordId, ft.TagId })
+                    .ToHashSet();
+
+                foreach (var localFile in localFiles)
+                {
+                    if (!fileMapping.ContainsKey(localFile.Id))
+                        continue;
+
+                    var newFileId = fileMapping[localFile.Id];
+
+                    foreach (var localFileTag in localFile.LocalFileTags)
+                    {
+                        if (!tagMapping.ContainsKey(localFileTag.LocalTagId))
+                            continue;
+
+                        var newTagId = tagMapping[localFileTag.LocalTagId];
+
+                        if (!existingAssociations.Any(a => a.FileRecordId == newFileId && a.TagId == newTagId))
+                        {
+                            centralDb.FileTags.Add(new CentralFileTag
+                            {
+                                FileRecordId = newFileId,
+                                TagId = newTagId
+                            });
+                            associationsImported++;
+                        }
                     }
                 }
             }

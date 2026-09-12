@@ -29,13 +29,21 @@ namespace FileTagger.Windows
     {
         private readonly List<string> _filePaths;
         private readonly List<string> _originalFilePaths;
+        private List<string> _autocompleteTagNames = new List<string>();
+        private readonly List<string> _currentTagNames = new List<string>();
 
         public TagManagementWindow(List<string> filePaths)
         {
             InitializeComponent();
+
+            if (filePaths == null || filePaths.Count == 0)
+                throw new ArgumentException("No file paths were provided.", nameof(filePaths));
+
             _originalFilePaths = new List<string>(filePaths);
             _filePaths = new List<string>();
-            
+
+            try
+            {
             // Process each file path (handle temp files)
             foreach (var filePath in filePaths)
             {
@@ -90,6 +98,17 @@ namespace FileTagger.Windows
             
             LoadCurrentTags();
             LoadAvailableTags();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to load tag management window: {ex.Message}", ex);
+            }
+        }
+
+        private void EnsureTagNamesLoaded()
+        {
+            if (_autocompleteTagNames.Count == 0)
+                _autocompleteTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
         }
 
         // Convenience constructor for backward compatibility (single file)
@@ -105,6 +124,8 @@ namespace FileTagger.Windows
 
         private void LoadCurrentTags()
         {
+            _currentTagNames.Clear();
+
             if (_filePaths.Count == 0)
             {
                 CurrentTagsListBox.ItemsSource = new List<TagDisplayItem>();
@@ -131,6 +152,7 @@ namespace FileTagger.Windows
                         TotalFiles = 1 
                     })
                     .ToList();
+                _currentTagNames.AddRange(displayItems.Select(t => t.TagName));
                 CurrentTagsListBox.ItemsSource = displayItems;
             }
             else
@@ -159,27 +181,26 @@ namespace FileTagger.Windows
                     })
                     .ToList();
 
+                _currentTagNames.AddRange(displayItems.Select(t => t.TagName));
                 CurrentTagsListBox.ItemsSource = displayItems;
             }
         }
 
         private void LoadAvailableTags()
         {
-            var allTags = DatabaseManager.Instance.GetAllAvailableTags();
-            
-            // Get current tags
-            var currentTags = (CurrentTagsListBox.ItemsSource as List<TagDisplayItem> ?? new List<TagDisplayItem>())
-                .Select(t => t.TagName)
-                .ToList();
+            EnsureTagNamesLoaded();
 
-            // Show tags that are not already on the files
-            var availableTags = allTags
-                .Where(t => !currentTags.Contains(t.Name, StringComparer.OrdinalIgnoreCase))
-                .Select(t => t.Name)
+            var availableTags = _autocompleteTagNames
+                .Where(name => !_currentTagNames.Contains(name, StringComparer.OrdinalIgnoreCase))
                 .OrderBy(t => t)
                 .ToList();
 
             AvailableTagsListBox.ItemsSource = availableTags;
+        }
+
+        private void RefreshTagNameCache()
+        {
+            _autocompleteTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
         }
 
         private void CurrentTagsListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -204,6 +225,7 @@ namespace FileTagger.Windows
                         DatabaseManager.Instance.RemoveTagFromFile(filePath, selectedTag.TagName);
                     }
                     
+                    RefreshTagNameCache();
                     LoadCurrentTags();
                     LoadAvailableTags();
                 }
@@ -233,6 +255,7 @@ namespace FileTagger.Windows
                 
                 NewTagTextBox.Text = "Create new tag";
                 NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+                RefreshTagNameCache();
                 LoadCurrentTags();
                 LoadAvailableTags();
             }
@@ -271,6 +294,7 @@ namespace FileTagger.Windows
                 
                 NewTagTextBox.Text = "Create new tag";
                 NewTagTextBox.Foreground = System.Windows.Media.Brushes.Gray;
+                RefreshTagNameCache();
                 LoadAvailableTags();
             }
             catch (Exception ex)
@@ -298,6 +322,7 @@ namespace FileTagger.Windows
                     }
                 }
                 
+                RefreshTagNameCache();
                 LoadCurrentTags();
                 LoadAvailableTags();
             }
@@ -402,10 +427,9 @@ namespace FileTagger.Windows
                 return;
             }
 
-            var allTags = DatabaseManager.Instance.GetAllAvailableTags();
-            var matchingTags = allTags
-                .Where(t => t.Name.StartsWith(searchText, StringComparison.OrdinalIgnoreCase))
-                .Select(t => t.Name)
+            EnsureTagNamesLoaded();
+            var matchingTags = _autocompleteTagNames
+                .Where(name => name.StartsWith(searchText, StringComparison.OrdinalIgnoreCase))
                 .Take(10)
                 .ToList();
 

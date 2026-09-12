@@ -26,6 +26,12 @@ namespace FileTagger.Data
         public DateTime LastModified { get; set; } = DateTime.UtcNow;
         
         public long FileSize { get; set; } = 0;
+
+        /// <summary>
+        /// Set on push when this file's tags differ from remote. Other machines apply tag
+        /// updates on pull only for files with this flag, avoiding blind overwrites.
+        /// </summary>
+        public bool PushedNew { get; set; }
         
         // Navigation property
         public virtual ICollection<LocalFileTag> LocalFileTags { get; set; } = new List<LocalFileTag>();

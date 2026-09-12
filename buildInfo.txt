@@ -1,0 +1,11 @@
+PS D:\projects\fileSorter> dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o release-single
+
+Tag image with comma seperated tags. Only return tags seperated by comma and nothing else and only use tags only from provided list: Abs, AI generated, Alice, Anal, Angry, Anime, Anticipation, Ass, Athletic, Back, Ball gag, Bendy, Bestiality, Blindfold, Bondage, Boobs, Boots, Boy, Bunny, But plug, Cam, Cape, Cat ears, Censure, Chain, Chastity, Choker, Crisp, Cum, Cyborg, Demon, Dick, Dildo, Distraction, Domination, Dominatrix, DP, Drawing, Dress, Elf, Fairy, Fary, Feet, Femdom, Fingering, Fishnets, Foto, Fucking, Furry, Futa, Ghotic, Gif, Girl, Girls, Grayscale, Group, Handjob, Happy, Heels, Horns, Humiliation, In public, Joy, Kibrika, Lace, Latex, Leash, Leashe, Lesbian, Lingerie, Lops, Maid, Makima, Monochrome, Monster, Nature, Neon, Nude, OG hot, Oral, Ork, Painting, Pair, Panels, Party, Pegging, Piercing, Pleasure, Pole, Public, Punk, Pussy, Rope, Scared, Seductive, Sex, Sketch, Slave, Slutty, Smiling, Solo, Sound, Spanking, Spit, Stern, Stirna, Stockade, Stockings, Strap-on, Straps, Struggle, Surprise, Sweet, Tattoo, Tease, Tentacles, Text, Threesome, Tight clothes, Tights, Tongue, Toys, Using, Vampire, Whip, Witchy
+
+
+What to do:
+
+1) Sync update -> To not overwrite.
+When pushing, add check to each file, that this is pushed new
+When pulling check if any files has this check and then update local tags based of these files.
+Before pushing we pull and then push 

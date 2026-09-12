@@ -13,19 +13,21 @@ namespace FileTagger
         {
             base.OnStartup(e);
 
-            // Handle command line arguments first
+            // Handle command line arguments first (Explorer context menu, etc.)
             if (e.Args.Length > 0)
             {
-                // This is a command line instance - don't register/unregister context menus
-                // Just initialize the database manager for command line operations
                 DatabaseManager.Instance.Initialize();
-                
-                if (CommandLineHandler.HandleCommandLineArgs(e.Args))
+
+                if (!CommandLineHandler.HandleCommandLineArgs(e.Args))
                 {
-                    // Command was handled, shut down the application
-                    Shutdown();
-                    return;
+                    MessageBox.Show(
+                        "File Tagger could not run the requested action.\n\n" +
+                        string.Join("\n", e.Args),
+                        "File Tagger", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
+
+                Shutdown();
+                return;
             }
 
             // This is the main application instance

@@ -11,177 +11,228 @@ namespace FileTagger
 {
     public static class CommandLineHandler
     {
-        private static readonly string TempFileBasePath = Path.Combine(Path.GetTempPath(), "FileTagger_Selection");
-        private static readonly int CollectionWindowMs = 500; // Wait 500ms to collect all file selections
+        private static readonly string CollectionDirectory = Path.Combine(
+            Path.GetTempPath(), "FileTagger_Selection");
+        private static readonly int CollectionWindowMs = 400;
+        private const string CollectionMutexName = "FileTagger_ManageTags_Collection";
 
         public static bool HandleCommandLineArgs(string[] args)
         {
-            if (args.Length < 2) return false;
+            if (args.Length < 2)
+                return false;
 
             var command = args[0];
-            
+
             switch (command)
             {
                 case "--manage-tags":
-                    // Collect all file paths from remaining arguments
-                    var filePaths = new List<string>();
-                    for (int i = 1; i < args.Length; i++)
+                {
+                    var filePaths = ParseExistingFilePaths(args, startIndex: 1);
+                    if (filePaths.Count == 0)
                     {
-                        if (File.Exists(args[i]))
-                        {
-                            filePaths.Add(args[i]);
-                        }
+                        MessageBox.Show(
+                            "Could not find the selected file.\n\n" +
+                            "The file may have been moved or deleted, or the path could not be read.",
+                            "File Tagger", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return true;
                     }
-                    
-                    if (filePaths.Count > 0)
-                    {
-                        return HandleManageTags(filePaths);
-                    }
-                    return false;
-                
+
+                    return HandleManageTags(filePaths);
+                }
+
                 case "--view-tags":
-                    return HandleViewTags(args[1]);
-                
+                    return HandleViewTags(NormalizePath(args[1]));
+
                 case "--filter-directory":
-                    return HandleFilterDirectory(args[1]);
-                
+                    return HandleFilterDirectory(NormalizePath(args[1]));
+
                 default:
                     return false;
             }
         }
 
-        private static readonly object _fileLock = new object();
+        private static List<string> ParseExistingFilePaths(string[] args, int startIndex)
+        {
+            var filePaths = new List<string>();
+            for (int i = startIndex; i < args.Length; i++)
+            {
+                var path = NormalizePath(args[i]);
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                    filePaths.Add(path);
+            }
+
+            return filePaths;
+        }
+
+        private static string NormalizePath(string path) =>
+            string.IsNullOrWhiteSpace(path) ? string.Empty : path.Trim().Trim('"');
 
         private static bool HandleManageTags(List<string> filePaths)
         {
             try
             {
-                if (filePaths == null || filePaths.Count == 0) return false;
+                if (filePaths == null || filePaths.Count == 0)
+                    return false;
 
-                // Use a named mutex to coordinate between multiple instances
-                bool isFirstInstance = false;
-                Mutex collectionMutex = null;
-                
-                try
+                Directory.CreateDirectory(CollectionDirectory);
+                var collectionFilePath = Path.Combine(CollectionDirectory, "manage_tags.txt");
+                AppendCollectionPaths(collectionFilePath, filePaths);
+
+                // Explorer launches one process per selected file. The first process to acquire
+                // the mutex waits briefly so siblings can append their paths, then opens one window.
+                using var mutex = new Mutex(false, CollectionMutexName);
+                var isCoordinator = TryAcquireCoordinatorMutex(mutex);
+
+                if (isCoordinator)
                 {
-                    collectionMutex = new Mutex(true, "FileTagger_ManageTags_Collection", out isFirstInstance);
-                    
-                    // Create/append to temporary file with selected file paths
-                    var tempFilePath = $"{TempFileBasePath}_{DateTime.Now:yyyyMMdd}.txt";
-                    
-                    // Write our files to the temp file
-                    WriteFilePaths(tempFilePath, filePaths);
-                    
-                    if (isFirstInstance)
+                    try
                     {
-                        // First instance - wait to collect all files from other instances
                         Thread.Sleep(CollectionWindowMs);
-                        
-                        // Read all collected file paths
-                        var allFilePaths = ReadFilePaths(tempFilePath, filePaths);
-                        
-                        // Process all collected files
-                        var processedPaths = new List<string>();
-                        foreach (var path in allFilePaths)
-                        {
-                            // Check if this is a temp file - if so, get the original file path
-                            string originalFilePath = path;
-                            if (TempResultsManager.Instance.IsInTempDirectory(path))
-                            {
-                                var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(path);
-                                if (!string.IsNullOrEmpty(mappedPath))
-                                {
-                                    originalFilePath = mappedPath;
-                                }
-                                else
-                                {
-                                    continue; // Skip this file
-                                }
-                            }
-                            else if (!ShellIntegration.IsInWatchedDirectory(path))
-                            {
-                                // Skip files not in watched directories
-                                continue;
-                            }
-                            
-                            processedPaths.Add(originalFilePath);
-                        }
-                        
-                        if (processedPaths.Count == 0)
-                        {
-                            MessageBox.Show("Selected files are not in a watched directory. Please add the directory to File Tagger settings first.", 
-                                "File Tagger", MessageBoxButton.OK, MessageBoxImage.Information);
-                            return true;
-                        }
-                        
-                        // Open tag management window with all files
-                        var tagWindow = new TagManagementWindow(processedPaths);
-                        tagWindow.ShowDialog();
-                        return true;
+                        var allPaths = ReadCollectionPaths(collectionFilePath, filePaths);
+                        OpenManageTagsWindow(allPaths);
                     }
-                    else
+                    finally
                     {
-                        // Not the first instance - just add files and exit
-                        // The first instance will handle opening the window
-                        return true;
+                        ReleaseCoordinatorMutex(mutex);
                     }
                 }
-                finally
+                else
                 {
-                    if (isFirstInstance && collectionMutex != null)
-                    {
-                        collectionMutex.ReleaseMutex();
-                    }
-                    collectionMutex?.Dispose();
+                    // Sibling process — coordinator opens the combined window.
+                    WaitForCoordinator(mutex);
                 }
+
+                return true;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error managing tags: {ex.Message}\n\nStack Trace:\n{ex.StackTrace}", 
+                MessageBox.Show(
+                    $"Error managing tags: {ex.Message}",
                     "File Tagger Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return true;
             }
         }
 
-        private static void WriteFilePaths(string tempFilePath, List<string> filePaths)
+        private static bool TryAcquireCoordinatorMutex(Mutex mutex)
         {
-            lock (_fileLock)
+            try
+            {
+                return mutex.WaitOne(0);
+            }
+            catch (AbandonedMutexException)
+            {
+                return mutex.WaitOne(0);
+            }
+        }
+
+        private static void ReleaseCoordinatorMutex(Mutex mutex)
+        {
+            try
+            {
+                mutex.ReleaseMutex();
+            }
+            catch
+            {
+                // Ignore — mutex may already have been released.
+            }
+        }
+
+        private static void WaitForCoordinator(Mutex mutex)
+        {
+            try
+            {
+                mutex.WaitOne(TimeSpan.FromSeconds(5));
+            }
+            catch (AbandonedMutexException)
+            {
+                // Coordinator crashed — nothing to wait for.
+            }
+            catch
+            {
+                // Ignore wait failures for sibling processes.
+            }
+        }
+
+        private static void OpenManageTagsWindow(IEnumerable<string> filePaths)
+        {
+            var processedPaths = ResolveManageTagPaths(filePaths);
+            if (processedPaths.Count == 0)
+            {
+                MessageBox.Show(
+                    "Selected files are not in a watched directory.\n\n" +
+                    "Add the folder to File Tagger (Settings tab) and try again.",
+                    "File Tagger", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var tagWindow = new TagManagementWindow(processedPaths);
+            tagWindow.ShowDialog();
+        }
+
+        private static List<string> ResolveManageTagPaths(IEnumerable<string> filePaths)
+        {
+            var result = new List<string>();
+
+            foreach (var path in filePaths.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    continue;
+
+                if (TempResultsManager.Instance.IsInTempDirectory(path))
+                {
+                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(path);
+                    if (!string.IsNullOrEmpty(mappedPath))
+                        result.Add(mappedPath);
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(DatabaseManager.Instance.GetWatchedDirectoryForFile(path)))
+                    result.Add(path);
+            }
+
+            return result;
+        }
+
+        private static void AppendCollectionPaths(string collectionFilePath, IEnumerable<string> filePaths)
+        {
+            lock (CollectionDirectory)
             {
                 try
                 {
-                    File.AppendAllLines(tempFilePath, filePaths);
+                    File.AppendAllLines(collectionFilePath, filePaths);
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"Error writing file paths: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"Error writing manage-tags collection file: {ex.Message}");
                 }
             }
         }
 
-        private static List<string> ReadFilePaths(string tempFilePath, List<string> fallbackPaths)
+        private static List<string> ReadCollectionPaths(string collectionFilePath, List<string> fallbackPaths)
         {
-            lock (_fileLock)
+            lock (CollectionDirectory)
             {
                 try
                 {
-                    if (File.Exists(tempFilePath))
+                    if (File.Exists(collectionFilePath))
                     {
-                        var paths = File.ReadAllLines(tempFilePath)
-                            .Where(f => File.Exists(f))
+                        var paths = File.ReadAllLines(collectionFilePath)
+                            .Select(NormalizePath)
+                            .Where(p => !string.IsNullOrWhiteSpace(p) && File.Exists(p))
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .ToList();
-                        
-                        // Clean up temp file
-                        try { File.Delete(tempFilePath); } catch { }
-                        
-                        return paths;
+
+                        try { File.Delete(collectionFilePath); } catch { }
+
+                        if (paths.Count > 0)
+                            return paths;
                     }
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"Error reading file paths: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"Error reading manage-tags collection file: {ex.Message}");
                 }
-                
+
                 return fallbackPaths;
             }
         }
@@ -190,9 +241,10 @@ namespace FileTagger
         {
             try
             {
-                if (!File.Exists(filePath)) return false;
+                filePath = NormalizePath(filePath);
+                if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+                    return false;
 
-                // Check if this is a temp file - if so, get the original file path
                 string originalFilePath = filePath;
                 string displayNote = "";
                 if (TempResultsManager.Instance.IsInTempDirectory(filePath))
@@ -205,31 +257,32 @@ namespace FileTagger
                     }
                     else
                     {
-                        MessageBox.Show("Cannot find original file location for this temporary file.", 
+                        MessageBox.Show("Cannot find original file location for this temporary file.",
                             "File Tagger Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                         return true;
                     }
                 }
 
-                var allFiles = DatabaseManager.Instance.GetAllFilesWithTags();
-                var fileRecord = allFiles.FirstOrDefault(f => f.FullPath == originalFilePath);
+                var tags = DatabaseManager.Instance.GetTagsForFile(originalFilePath);
 
-                if (fileRecord == null || !fileRecord.Tags.Any())
+                if (!tags.Any())
                 {
-                    MessageBox.Show($"No tags found for:\n{Path.GetFileName(originalFilePath)}{displayNote}", 
+                    MessageBox.Show($"No tags found for:\n{Path.GetFileName(originalFilePath)}{displayNote}",
                         "File Tags", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
                 else
                 {
-                    var tagsText = string.Join("\n• ", fileRecord.Tags);
-                    MessageBox.Show($"Tags for {fileRecord.FileName}:\n\n• {tagsText}{displayNote}", 
+                    var tagsText = string.Join("\n• ", tags);
+                    MessageBox.Show($"Tags for {Path.GetFileName(originalFilePath)}:\n\n• {tagsText}{displayNote}",
                         "File Tags", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
+
                 return true;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error viewing tags: {ex.Message}", "File Tagger Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Error viewing tags: {ex.Message}", "File Tagger Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
                 return true;
             }
         }
@@ -238,7 +291,9 @@ namespace FileTagger
         {
             try
             {
-                if (!Directory.Exists(directoryPath)) return false;
+                directoryPath = NormalizePath(directoryPath);
+                if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
+                    return false;
 
                 var filterWindow = new DirectoryFilterWindow(directoryPath);
                 filterWindow.ShowDialog();
@@ -246,7 +301,8 @@ namespace FileTagger
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error filtering directory: {ex.Message}", "File Tagger Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Error filtering directory: {ex.Message}", "File Tagger Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
                 return true;
             }
         }
