@@ -30,10 +30,11 @@ namespace FileTagger
                     var filePaths = ParseExistingFilePaths(args, startIndex: 1);
                     if (filePaths.Count == 0)
                     {
-                        MessageBox.Show(
+                        CliConsole.Show(
+                            "File Tagger",
                             "Could not find the selected file.\n\n" +
                             "The file may have been moved or deleted, or the path could not be read.",
-                            "File Tagger", MessageBoxButton.OK, MessageBoxImage.Warning);
+                            MessageBoxImage.Warning);
                         return true;
                     }
 
@@ -106,9 +107,7 @@ namespace FileTagger
             }
             catch (Exception ex)
             {
-                MessageBox.Show(
-                    $"Error managing tags: {ex.Message}",
-                    "File Tagger Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                CliConsole.ShowError("File Tagger Error", "Error managing tags.", ex);
                 return true;
             }
         }
@@ -158,10 +157,10 @@ namespace FileTagger
             var processedPaths = ResolveManageTagPaths(filePaths);
             if (processedPaths.Count == 0)
             {
-                MessageBox.Show(
+                CliConsole.Show(
+                    "File Tagger",
                     "Selected files are not in a watched directory.\n\n" +
-                    "Add the folder to File Tagger (Settings tab) and try again.",
-                    "File Tagger", MessageBoxButton.OK, MessageBoxImage.Information);
+                    "Add the folder to File Tagger (Settings tab) and try again.");
                 return;
             }
 
@@ -257,8 +256,10 @@ namespace FileTagger
                     }
                     else
                     {
-                        MessageBox.Show("Cannot find original file location for this temporary file.",
-                            "File Tagger Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        CliConsole.Show(
+                            "File Tagger Error",
+                            "Cannot find original file location for this temporary file.",
+                            MessageBoxImage.Warning);
                         return true;
                     }
                 }
@@ -267,22 +268,23 @@ namespace FileTagger
 
                 if (!tags.Any())
                 {
-                    MessageBox.Show($"No tags found for:\n{Path.GetFileName(originalFilePath)}{displayNote}",
-                        "File Tags", MessageBoxButton.OK, MessageBoxImage.Information);
+                    CliConsole.Show(
+                        "File Tags",
+                        $"No tags found for:\n{Path.GetFileName(originalFilePath)}{displayNote}");
                 }
                 else
                 {
                     var tagsText = string.Join("\n• ", tags);
-                    MessageBox.Show($"Tags for {Path.GetFileName(originalFilePath)}:\n\n• {tagsText}{displayNote}",
-                        "File Tags", MessageBoxButton.OK, MessageBoxImage.Information);
+                    CliConsole.Show(
+                        "File Tags",
+                        $"Tags for {Path.GetFileName(originalFilePath)}:\n\n• {tagsText}{displayNote}");
                 }
 
                 return true;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error viewing tags: {ex.Message}", "File Tagger Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                CliConsole.ShowError("File Tagger Error", "Error viewing tags.", ex);
                 return true;
             }
         }
@@ -301,8 +303,7 @@ namespace FileTagger
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error filtering directory: {ex.Message}", "File Tagger Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                CliConsole.ShowError("File Tagger Error", "Error filtering directory.", ex);
                 return true;
             }
         }

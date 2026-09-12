@@ -29,8 +29,8 @@ namespace FileTagger
                     return;
                 }
                 
-                // If path hasn't changed and menus are already registered, skip
-                if (_lastRegisteredExecutablePath == executablePath && AreContextMenusRegistered())
+                // If path hasn't changed and menus point at this executable, skip
+                if (_lastRegisteredExecutablePath == executablePath && AreContextMenusRegistered(executablePath))
                 {
                     return;
                 }
@@ -94,35 +94,77 @@ namespace FileTagger
             }
         }
 
+        private const string AppExeName = "FileTagger.exe";
+
         private static string GetExecutablePath()
         {
-            // For single-file deployments, use Environment.ProcessPath which works for both single-file and regular deployments
-            var executablePath = Environment.ProcessPath;
-            
-            // If Environment.ProcessPath is not available, construct path using AppContext.BaseDirectory + process name
-            if (string.IsNullOrEmpty(executablePath))
+            // Environment.ProcessPath is FileTagger.exe for published/direct runs, but dotnet.exe when
+            // launched via "dotnet run" or the VS debugger — never register the host as the shell target.
+            var processPath = Environment.ProcessPath;
+            if (IsFileTaggerExecutable(processPath))
+                return Path.GetFullPath(processPath!);
+
+            var baseDirCandidate = Path.Combine(AppContext.BaseDirectory, AppExeName);
+            if (File.Exists(baseDirCandidate))
+                return Path.GetFullPath(baseDirCandidate);
+
+            var assemblyLocation = Assembly.GetExecutingAssembly().Location;
+            if (!string.IsNullOrEmpty(assemblyLocation))
             {
-                var processName = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
-                executablePath = Path.Combine(AppContext.BaseDirectory, processName + ".exe");
+                var assemblyDir = Path.GetDirectoryName(assemblyLocation);
+                if (!string.IsNullOrEmpty(assemblyDir))
+                {
+                    var assemblyDirCandidate = Path.Combine(assemblyDir, AppExeName);
+                    if (File.Exists(assemblyDirCandidate))
+                        return Path.GetFullPath(assemblyDirCandidate);
+                }
             }
-            
-            return executablePath;
+
+            return File.Exists(baseDirCandidate)
+                ? Path.GetFullPath(baseDirCandidate)
+                : processPath ?? baseDirCandidate;
         }
 
-        private static bool AreContextMenusRegistered()
+        private static bool IsFileTaggerExecutable(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                return false;
+
+            return Path.GetFileName(path).Equals(AppExeName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool AreContextMenusRegistered(string executablePath)
         {
             try
             {
-                using var addTagKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{SHELL_KEY}\{ADD_TAG_KEY}");
-                using var viewTagKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{SHELL_KEY}\{VIEW_TAGS_KEY}");
-                using var filterKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\Directory\shell\{FILTER_BY_TAGS_KEY}");
-                
-                return addTagKey != null && viewTagKey != null && filterKey != null;
+                using var addTagKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{SHELL_KEY}\{ADD_TAG_KEY}\command");
+                using var viewTagKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{SHELL_KEY}\{VIEW_TAGS_KEY}\command");
+                using var filterKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\Directory\shell\{FILTER_BY_TAGS_KEY}\command");
+
+                if (addTagKey == null || viewTagKey == null || filterKey == null)
+                    return false;
+
+                var addTagCommand = addTagKey.GetValue("") as string;
+                var viewTagCommand = viewTagKey.GetValue("") as string;
+                var filterCommand = filterKey.GetValue("") as string;
+
+                return CommandTargetsExecutable(addTagCommand, executablePath)
+                    && CommandTargetsExecutable(viewTagCommand, executablePath)
+                    && CommandTargetsExecutable(filterCommand, executablePath);
             }
             catch
             {
                 return false;
             }
+        }
+
+        private static bool CommandTargetsExecutable(string command, string executablePath)
+        {
+            if (string.IsNullOrWhiteSpace(command))
+                return false;
+
+            var quotedExecutable = $"\"{executablePath}\"";
+            return command.StartsWith(quotedExecutable, StringComparison.OrdinalIgnoreCase);
         }
 
         private static void RefreshShell()
@@ -226,7 +268,7 @@ namespace FileTagger
             try
             {
                 var executablePath = GetExecutablePath();
-                var isRegistered = AreContextMenusRegistered();
+                var isRegistered = AreContextMenusRegistered(executablePath);
                 var fileExists = File.Exists(executablePath);
                 
                 return $"Executable Path: {executablePath}\n" +

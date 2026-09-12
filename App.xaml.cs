@@ -1,3 +1,4 @@
+using System;
 using System.Windows;
 using System.Threading;
 using FileTagger.Services;
@@ -16,14 +17,26 @@ namespace FileTagger
             // Handle command line arguments first (Explorer context menu, etc.)
             if (e.Args.Length > 0)
             {
-                DatabaseManager.Instance.Initialize();
+                CliConsole.Attach();
+                CliConsole.WriteArgs(e.Args);
+                DispatcherUnhandledException += OnCliDispatcherUnhandledException;
 
-                if (!CommandLineHandler.HandleCommandLineArgs(e.Args))
+                try
                 {
-                    MessageBox.Show(
-                        "File Tagger could not run the requested action.\n\n" +
-                        string.Join("\n", e.Args),
-                        "File Tagger", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    DatabaseManager.Instance.Initialize();
+
+                    if (!CommandLineHandler.HandleCommandLineArgs(e.Args))
+                    {
+                        CliConsole.Show(
+                            "File Tagger",
+                            "File Tagger could not run the requested action.\n\n" +
+                            string.Join("\n", e.Args),
+                            MessageBoxImage.Warning);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    CliConsole.ShowError("File Tagger startup error", "An unexpected error occurred.", ex);
                 }
 
                 Shutdown();
@@ -57,7 +70,13 @@ namespace FileTagger
             mainWindow.Show();
         }
 
-            protected override void OnExit(ExitEventArgs e)
+        private void OnCliDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
+        {
+            CliConsole.ShowError("File Tagger error", "An unexpected error occurred.", e.Exception);
+            e.Handled = true;
+        }
+
+        protected override void OnExit(ExitEventArgs e)
     {
         // Only cleanup shell integration when the main application exits
         // Command line instances should NOT remove the context menus
