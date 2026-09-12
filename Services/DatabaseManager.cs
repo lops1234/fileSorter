@@ -264,6 +264,18 @@ namespace FileTagger.Services
             relativePath.Replace('/', Path.DirectorySeparatorChar)
                 .Replace('\\', Path.DirectorySeparatorChar);
 
+        private static CentralFileRecord FindCentralFileRecord(
+            CentralDbContext centralDb, int directoryId, string relativePath)
+        {
+            relativePath = NormalizeRelativePath(relativePath);
+
+            return centralDb.FileRecords
+                .Where(f => f.DirectoryId == directoryId)
+                .AsEnumerable()
+                .FirstOrDefault(f =>
+                    string.Equals(NormalizeRelativePath(f.RelativePath), relativePath, StringComparison.OrdinalIgnoreCase));
+        }
+
         #endregion
 
         #region Pull/Push/Cleanup Operations
@@ -757,18 +769,9 @@ namespace FileTagger.Services
             if (!TryGetRelativePathForWatchedFile(watchedDir, filePath, out var relativePath))
                 return;
 
-            var fileName = Path.GetFileName(filePath);
             relativePath = NormalizeRelativePath(relativePath);
-
-            // Get or create file record.
-            // Plain == (exact match) is intentional: Path.GetRelativePath always returns the same
-            // casing for the same physical file within a run, so exact equality is correct and
-            // efficient (hits the SQL index).  Avoid lower()/ToLower() — SQLite's lower() is
-            // ASCII-only and silently mismatches paths with non-ASCII chars, which causes a
-            // second INSERT attempt and a UNIQUE constraint violation.
-            var fileRecord = centralDb.FileRecords.FirstOrDefault(f =>
-                f.DirectoryId == centralDir.Id &&
-                string.Equals(NormalizeRelativePath(f.RelativePath), relativePath, StringComparison.OrdinalIgnoreCase));
+            var fileName = Path.GetFileName(filePath);
+            var fileRecord = FindCentralFileRecord(centralDb, centralDir.Id, relativePath);
 
             if (fileRecord == null)
             {
@@ -843,11 +846,7 @@ namespace FileTagger.Services
             if (!TryGetRelativePathForWatchedFile(watchedDir, filePath, out var relativePath))
                 return;
 
-            relativePath = NormalizeRelativePath(relativePath);
-
-            var fileRecord = centralDb.FileRecords.FirstOrDefault(f =>
-                f.DirectoryId == centralDir.Id &&
-                string.Equals(NormalizeRelativePath(f.RelativePath), relativePath, StringComparison.OrdinalIgnoreCase));
+            var fileRecord = FindCentralFileRecord(centralDb, centralDir.Id, relativePath);
 
             if (fileRecord == null)
                 return;
@@ -1466,19 +1465,14 @@ namespace FileTagger.Services
             if (!TryGetRelativePathForWatchedFile(watchedDir, filePath, out var relativePath))
                 return new List<string>();
 
-            relativePath = NormalizeRelativePath(relativePath);
-
-            var fileRecord = centralDb.FileRecords
-                .Include(f => f.FileTags)
-                    .ThenInclude(ft => ft.Tag)
-                .FirstOrDefault(f =>
-                    f.DirectoryId == centralDir.Id &&
-                    string.Equals(NormalizeRelativePath(f.RelativePath), relativePath, StringComparison.OrdinalIgnoreCase));
+            var fileRecord = FindCentralFileRecord(centralDb, centralDir.Id, relativePath);
 
             if (fileRecord == null)
                 return new List<string>();
 
-            return fileRecord.FileTags
+            return centralDb.FileTags
+                .Where(ft => ft.FileRecordId == fileRecord.Id)
+                .Include(ft => ft.Tag)
                 .Where(ft => ft.Tag != null)
                 .Select(ft => ft.Tag.Name)
                 .ToList();
