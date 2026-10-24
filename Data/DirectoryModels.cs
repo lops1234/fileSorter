@@ -90,4 +90,23 @@ namespace FileTagger.Data
 
         public DateTime DeletedAt { get; set; } = DateTime.UtcNow;
     }
+
+    /// <summary>
+    /// Per-file tag removal propagated through the folder database. Its presence also marks
+    /// the database as written by a client that preserves LocalFileTag.CreatedAt.
+    /// </summary>
+    public class LocalFileTagTombstone
+    {
+        [Key]
+        public int Id { get; set; }
+
+        [Required]
+        public string RelativePath { get; set; } = string.Empty;
+
+        [Required]
+        [MaxLength(100)]
+        public string TagName { get; set; } = string.Empty;
+
+        public DateTime DeletedAt { get; set; } = DateTime.UtcNow;
+    }
 }

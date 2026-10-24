@@ -84,6 +84,66 @@ namespace FileTagger.Services
                 )");
 
             EnsureDeletedTagsStashedColumn(db);
+
+            db.Database.ExecuteSqlRaw(@"
+                CREATE TABLE IF NOT EXISTS FileTagTombstones (
+                    Id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    DirectoryId  INTEGER NOT NULL,
+                    RelativePath TEXT    NOT NULL,
+                    TagName      TEXT    NOT NULL,
+                    DeletedAt    TEXT    NOT NULL,
+                    FOREIGN KEY (DirectoryId) REFERENCES Directories(Id) ON DELETE CASCADE
+                )");
+            db.Database.ExecuteSqlRaw(
+                "CREATE INDEX IF NOT EXISTS IX_FileTagTombstones_DirectoryId_TagName ON FileTagTombstones (DirectoryId, TagName)");
+
+            MigrateToFileTagTombstones(db);
+        }
+
+        private const int TombstoneSchemaVersion = 2;
+
+        /// <summary>
+        /// One-time upgrade to per-file tag tombstones. Existing FileTags.CreatedAt values hold
+        /// sync times rather than tagging times, so they are reset to the minimum date: any
+        /// recorded deletion then wins over them, while tags added after the upgrade carry real
+        /// timestamps. Recorded tag deletions are expanded into per-file tombstones, except for
+        /// associations that exist again (re-tagged after the deletion).
+        /// </summary>
+        private static void MigrateToFileTagTombstones(CentralDbContext db)
+        {
+            var connection = db.Database.GetDbConnection();
+            db.Database.OpenConnection();
+            try
+            {
+                using (var cmd = connection.CreateCommand())
+                {
+                    cmd.CommandText = "PRAGMA user_version";
+                    if (Convert.ToInt32(cmd.ExecuteScalar()) >= TombstoneSchemaVersion)
+                        return;
+                }
+
+                using var transaction = db.Database.BeginTransaction();
+                db.Database.ExecuteSqlRaw("UPDATE FileTags SET CreatedAt = '0001-01-01 00:00:00'");
+                db.Database.ExecuteSqlRaw(@"
+                    INSERT INTO FileTagTombstones (DirectoryId, RelativePath, TagName, DeletedAt)
+                    SELECT dt.DirectoryId, dtf.RelativePath, dt.Name, MAX(dt.DeletedAt)
+                    FROM DeletedTags dt
+                    JOIN DeletedTagFiles dtf ON dtf.DeletedTagId = dt.Id
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM FileTags ft
+                        JOIN FileRecords fr ON fr.Id = ft.FileRecordId
+                        JOIN Tags t ON t.Id = ft.TagId
+                        WHERE fr.DirectoryId = dt.DirectoryId
+                          AND fr.RelativePath = dtf.RelativePath
+                          AND t.Name = dt.Name COLLATE NOCASE)
+                    GROUP BY dt.DirectoryId, dtf.RelativePath, dt.Name COLLATE NOCASE");
+                db.Database.ExecuteSqlRaw($"PRAGMA user_version = {TombstoneSchemaVersion}");
+                transaction.Commit();
+            }
+            finally
+            {
+                db.Database.CloseConnection();
+            }
         }
 
         private static void EnsureDeletedTagsStashedColumn(CentralDbContext db)
@@ -424,12 +484,12 @@ namespace FileTagger.Services
                     }
                 }
 
-                // Deleted-tag names for this directory — excluded from the push and written
-                // to the remote DB's LocalDeletedTags table so other machines apply them on pull.
-                var localDeletedTagNames = centralDb.DeletedTags
-                    .Where(dt => dt.DirectoryId == centralDir.Id)
-                    .Select(dt => dt.Name)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                // Per-file tombstones are kept (until retention expires) and re-written on every
+                // push, so machines that sync later still receive the deletions.
+                var tombstoneCutoff = DateTime.UtcNow - TombstoneRetention;
+                var tombstonesToPropagate = LoadTombstones(centralDb, centralDir.Id).Values
+                    .Where(t => t.DeletedAt >= tombstoneCutoff)
+                    .ToList();
 
                 var centralTags = centralDb.Tags
                     .Where(t => t.DirectoryId == centralDir.Id)
@@ -451,8 +511,8 @@ namespace FileTagger.Services
                         g => g.Select(ft => tagsById[ft.TagId].Name)
                             .ToHashSet(StringComparer.OrdinalIgnoreCase));
 
-                // Collect deleted-tag entries (name + timestamp) to write to remote.
-                // Deduplicate by name — central DeletedTags may contain multiple rows per tag.
+                // Deleted tag names are still written so the UI on other machines can list them
+                // and older clients can apply them. Deduplicate by name.
                 var deletedTagsToPropagate = centralDb.DeletedTags
                     .Where(dt => dt.DirectoryId == centralDir.Id)
                     .AsEnumerable()
@@ -475,15 +535,13 @@ namespace FileTagger.Services
                     folderDb.Database.EnsureCreated();
                     EnsureFolderDbSchema((SqliteConnection)folderDb.Database.GetDbConnection());
 
-                    // Export tags — skip any that are in the local deleted-tags list
+                    // Export tags. Deleted tags are absent from central unless another machine
+                    // still uses them on files the deletion didn't cover.
                     var existingTags = folderDb.LocalTags.ToList();
                     var tagMapping = new Dictionary<int, int>(); // central ID -> local ID
 
                     foreach (var centralTag in centralTags)
                     {
-                        if (localDeletedTagNames.Contains(centralTag.Name))
-                            continue; // this tag was deleted locally; don't push it
-
                         var localTag = existingTags.FirstOrDefault(t =>
                             string.Equals(t.Name, centralTag.Name, StringComparison.OrdinalIgnoreCase));
 
@@ -527,6 +585,16 @@ namespace FileTagger.Services
                         {
                             Name = del.Name,
                             DeletedAt = del.DeletedAt
+                        });
+                    }
+
+                    foreach (var tombstone in tombstonesToPropagate)
+                    {
+                        folderDb.LocalFileTagTombstones.Add(new LocalFileTagTombstone
+                        {
+                            RelativePath = tombstone.RelativePath,
+                            TagName = tombstone.TagName,
+                            DeletedAt = tombstone.DeletedAt
                         });
                     }
 
@@ -579,7 +647,8 @@ namespace FileTagger.Services
                         fileMapping[centralFile.Id] = localFile.Id;
                     }
 
-                    // Export file-tag associations (only for tags that were actually exported)
+                    // Export file-tag associations with their original CreatedAt — the merge
+                    // compares it against tombstone DeletedAt on other machines.
                     var existingAssociations = folderDb.LocalFileTags.ToList()
                         .Select(ft => (ft.LocalFileRecordId, ft.LocalTagId))
                         .ToHashSet();
@@ -588,17 +657,18 @@ namespace FileTagger.Services
                     {
                         if (!fileMapping.ContainsKey(centralFileTag.FileRecordId) ||
                             !tagMapping.ContainsKey(centralFileTag.TagId))
-                            continue; // tag was deleted — association skipped automatically
+                            continue;
 
                         var localFileId = fileMapping[centralFileTag.FileRecordId];
                         var localTagId = tagMapping[centralFileTag.TagId];
 
-                        if (!existingAssociations.Contains((localFileId, localTagId)))
+                        if (existingAssociations.Add((localFileId, localTagId)))
                         {
                             folderDb.LocalFileTags.Add(new LocalFileTag
                             {
                                 LocalFileRecordId = localFileId,
-                                LocalTagId = localTagId
+                                LocalTagId = localTagId,
+                                CreatedAt = centralFileTag.CreatedAt
                             });
                             result.AssociationsExported++;
                         }
@@ -632,6 +702,11 @@ namespace FileTagger.Services
                         .Where(dt => dt.DirectoryId == centralDir.Id && !dt.StashedTags)
                         .ToList();
                     centralDb.DeletedTags.RemoveRange(propagated);
+
+                    var expiredTombstones = centralDb.FileTagTombstones
+                        .Where(t => t.DirectoryId == centralDir.Id && t.DeletedAt < tombstoneCutoff)
+                        .ToList();
+                    centralDb.FileTagTombstones.RemoveRange(expiredTombstones);
 
                     centralDb.SaveChanges();
                 }
@@ -864,6 +939,8 @@ namespace FileTagger.Services
             if (association != null)
             {
                 centralDb.FileTags.Remove(association);
+                var tombstones = LoadTombstones(centralDb, centralDir.Id);
+                UpsertTombstone(centralDb, tombstones, centralDir.Id, fileRecord.RelativePath, tag.Name, DateTime.UtcNow);
                 centralDb.SaveChanges();
             }
         }
@@ -1018,6 +1095,9 @@ namespace FileTagger.Services
                 .Where(t => t.Name.ToLower() == tagName.ToLower())
                 .ToList();
 
+            var tombstonesByDirectory = new Dictionary<int, Dictionary<string, CentralFileTagTombstone>>();
+            var deletedAt = DateTime.UtcNow;
+
             foreach (var tag in tagsToDelete)
             {
                 // Snapshot the tag and its file associations before deleting
@@ -1026,10 +1106,14 @@ namespace FileTagger.Services
                     Name        = tag.Name,
                     Description = tag.Description,
                     DirectoryId = tag.DirectoryId,
-                    DeletedAt   = DateTime.UtcNow
+                    DeletedAt   = deletedAt
                 };
+                var tombstones = GetTombstoneMap(centralDb, tombstonesByDirectory, tag.DirectoryId);
                 foreach (var ft in tag.FileTags)
+                {
                     deletedTag.DeletedTagFiles.Add(new CentralDeletedTagFile { RelativePath = ft.FileRecord.RelativePath });
+                    UpsertTombstone(centralDb, tombstones, tag.DirectoryId, ft.FileRecord.RelativePath, tag.Name, deletedAt);
+                }
 
                 centralDb.DeletedTags.Add(deletedTag);
                 centralDb.Tags.Remove(tag);
@@ -1143,6 +1227,9 @@ namespace FileTagger.Services
                     .ThenInclude(ft => ft.FileRecord)
                 .ToList();
 
+            var tombstonesByDirectory = new Dictionary<int, Dictionary<string, CentralFileTagTombstone>>();
+            var deletedAt = DateTime.UtcNow;
+
             foreach (var tag in tagsToDelete)
             {
                 var deletedTag = new CentralDeletedTag
@@ -1150,11 +1237,15 @@ namespace FileTagger.Services
                     Name        = tag.Name,
                     Description = tag.Description,
                     DirectoryId = tag.DirectoryId,
-                    DeletedAt   = DateTime.UtcNow,
+                    DeletedAt   = deletedAt,
                     StashedTags = true
                 };
+                var tombstones = GetTombstoneMap(centralDb, tombstonesByDirectory, tag.DirectoryId);
                 foreach (var ft in tag.FileTags)
+                {
                     deletedTag.DeletedTagFiles.Add(new CentralDeletedTagFile { RelativePath = ft.FileRecord.RelativePath });
+                    UpsertTombstone(centralDb, tombstones, tag.DirectoryId, ft.FileRecord.RelativePath, tag.Name, deletedAt);
+                }
 
                 centralDb.DeletedTags.Add(deletedTag);
                 centralDb.Tags.Remove(tag);
@@ -1874,8 +1965,89 @@ namespace FileTagger.Services
             return result;
         }
 
+        private static bool FolderDbHasTable(SqliteConnection connection, string table)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$name";
+            cmd.Parameters.AddWithValue("$name", table);
+            return cmd.ExecuteScalar() != null;
+        }
+
         private static bool TagSetsEqual(HashSet<string> left, HashSet<string> right) =>
             left.SetEquals(right);
+
+        // ── File-tag tombstones ──────────────────────────────────────────────
+        // A tombstone (file, tag, DeletedAt) removes that association wherever its
+        // CreatedAt <= DeletedAt; associations created later win over the deletion.
+
+        private static readonly TimeSpan TombstoneRetention = TimeSpan.FromDays(180);
+
+        private static string TombstoneKey(string relativePath, string tagName) =>
+            NormalizeRelativePath(relativePath).ToUpperInvariant() + "\0" + tagName.ToUpperInvariant();
+
+        private static Dictionary<string, CentralFileTagTombstone> LoadTombstones(
+            CentralDbContext centralDb, int directoryId)
+        {
+            var map = new Dictionary<string, CentralFileTagTombstone>(StringComparer.Ordinal);
+            foreach (var tombstone in centralDb.FileTagTombstones.Where(t => t.DirectoryId == directoryId).ToList())
+            {
+                var key = TombstoneKey(tombstone.RelativePath, tombstone.TagName);
+                if (map.TryGetValue(key, out var existing))
+                {
+                    if (tombstone.DeletedAt > existing.DeletedAt)
+                        existing.DeletedAt = tombstone.DeletedAt;
+                    centralDb.FileTagTombstones.Remove(tombstone);
+                }
+                else
+                {
+                    map[key] = tombstone;
+                }
+            }
+            return map;
+        }
+
+        private static Dictionary<string, CentralFileTagTombstone> GetTombstoneMap(
+            CentralDbContext centralDb,
+            Dictionary<int, Dictionary<string, CentralFileTagTombstone>> cache,
+            int directoryId)
+        {
+            if (!cache.TryGetValue(directoryId, out var map))
+            {
+                map = LoadTombstones(centralDb, directoryId);
+                cache[directoryId] = map;
+            }
+            return map;
+        }
+
+        private static void UpsertTombstone(
+            CentralDbContext centralDb,
+            Dictionary<string, CentralFileTagTombstone> tombstones,
+            int directoryId, string relativePath, string tagName, DateTime deletedAt)
+        {
+            var key = TombstoneKey(relativePath, tagName);
+            if (tombstones.TryGetValue(key, out var existing))
+            {
+                if (deletedAt > existing.DeletedAt)
+                    existing.DeletedAt = deletedAt;
+                return;
+            }
+
+            var tombstone = new CentralFileTagTombstone
+            {
+                DirectoryId  = directoryId,
+                RelativePath = NormalizeRelativePath(relativePath),
+                TagName      = tagName,
+                DeletedAt    = deletedAt
+            };
+            centralDb.FileTagTombstones.Add(tombstone);
+            tombstones[key] = tombstone;
+        }
+
+        private static bool IsTombstoned(
+            Dictionary<string, CentralFileTagTombstone> tombstones,
+            string relativePath, string tagName, DateTime associationCreatedAt) =>
+            tombstones.TryGetValue(TombstoneKey(relativePath, tagName), out var tombstone)
+            && tombstone.DeletedAt >= associationCreatedAt;
 
         private static HashSet<string> GetCentralFileTagNames(
             int fileRecordId,
@@ -1959,6 +2131,10 @@ namespace FileTagger.Services
             var useSelectiveFileSync = false;
             // Tag names recorded as deleted in the remote DB
             var remoteDeletedTagNames = new List<(string Name, DateTime DeletedAt)>();
+            // Per-file deletions; only written by tombstone-aware clients, whose
+            // LocalFileTag.CreatedAt values are real tagging times.
+            var remoteTombstones = new List<(string RelativePath, string TagName, DateTime DeletedAt)>();
+            var remoteTracksTombstones = false;
 
             // Read data using a direct SQLite connection to avoid connection pooling issues
             var connectionString = $"Data Source={dbPath};Mode=ReadOnly;Pooling=False";
@@ -1989,6 +2165,16 @@ namespace FileTagger.Services
                 }
                 catch { /* older DB without the table — ignore */ }
 
+                if (FolderDbHasTable(connection, "LocalFileTagTombstones"))
+                {
+                    remoteTracksTombstones = true;
+                    using var cmd = connection.CreateCommand();
+                    cmd.CommandText = "SELECT RelativePath, TagName, DeletedAt FROM LocalFileTagTombstones";
+                    using var reader = cmd.ExecuteReader();
+                    while (reader.Read())
+                        remoteTombstones.Add((reader.GetString(0), reader.GetString(1), reader.GetDateTime(2)));
+                }
+
                 using (var folderDb = new DirectoryDbContext(centralDir.DirectoryPath))
                 {
                     folderDb.Database.SetConnectionString(connectionString);
@@ -2006,78 +2192,120 @@ namespace FileTagger.Services
                 if (useSelectiveFileSync)
                     localFiles = localFiles.Where(f => f.PushedNew).ToList();
             }
+
+            // Older clients stamped associations with push time, so treat them as older than any deletion.
+            if (!remoteTracksTombstones)
+            {
+                foreach (var localFileTag in localFiles.SelectMany(f => f.LocalFileTags))
+                    localFileTag.CreatedAt = DateTime.MinValue;
+            }
             
             // Clear the connection from pool immediately
             SqliteConnection.ClearPool(new SqliteConnection(connectionString));
 
-            // ── Apply remote deletions ──────────────────────────────────────
-            // If the remote DB says a tag was deleted, remove it from local central DB
-            // and record it in local CentralDeletedTag (so it propagates on next push).
+            // ── Merge deletions ─────────────────────────────────────────────
+            var tombstones = LoadTombstones(centralDb, centralDir.Id);
+            foreach (var (relativePath, tagName, deletedAt) in remoteTombstones)
+                UpsertTombstone(centralDb, tombstones, centralDir.Id, relativePath, tagName, deletedAt);
+
+            var remoteDeletedAtByName = remoteDeletedTagNames
+                .GroupBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Max(d => d.DeletedAt), StringComparer.OrdinalIgnoreCase);
+
+            var centralPairs = centralDb.FileTags
+                .Include(ft => ft.FileRecord)
+                .Include(ft => ft.Tag)
+                .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
+                .ToList();
+
+            // Older clients only send deleted tag names: expand them to the files that
+            // had the tag before the deletion.
+            if (!remoteTracksTombstones)
+            {
+                foreach (var ft in centralPairs)
+                {
+                    if (remoteDeletedAtByName.TryGetValue(ft.Tag.Name, out var deletedAt) && ft.CreatedAt <= deletedAt)
+                        UpsertTombstone(centralDb, tombstones, centralDir.Id, ft.FileRecord.RelativePath, ft.Tag.Name, deletedAt);
+                }
+            }
+
+            var removedPathsByTag = new Dictionary<string, (CentralTag Tag, List<string> Paths)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var ft in centralPairs)
+            {
+                if (!IsTombstoned(tombstones, ft.FileRecord.RelativePath, ft.Tag.Name, ft.CreatedAt))
+                    continue;
+
+                centralDb.FileTags.Remove(ft);
+                if (!removedPathsByTag.TryGetValue(ft.Tag.Name, out var removed))
+                {
+                    removed = (ft.Tag, new List<string>());
+                    removedPathsByTag[ft.Tag.Name] = removed;
+                }
+                removed.Paths.Add(ft.FileRecord.RelativePath);
+            }
+
+            // List tags deleted on another machine in the local deleted-tags UI so they can be restored.
             var localDeletedNames = centralDb.DeletedTags
                 .Where(dt => dt.DirectoryId == centralDir.Id)
                 .Select(dt => dt.Name)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var (remoteName, remoteDeletedAt) in remoteDeletedTagNames)
+            foreach (var (name, removed) in removedPathsByTag)
             {
-                // Delete the active tag locally if it exists
-                var activeTag = centralDb.Tags
-                    .Include(t => t.FileTags).ThenInclude(ft => ft.FileRecord)
-                    .FirstOrDefault(t => t.DirectoryId == centralDir.Id &&
-                                        t.Name.ToLower() == remoteName.ToLower());
-                if (activeTag != null)
-                {
-                    // Record the deletion with file snapshots before removing
-                    if (!localDeletedNames.Contains(activeTag.Name))
-                    {
-                        var deletedEntry = new CentralDeletedTag
-                        {
-                            Name        = activeTag.Name,
-                            Description = activeTag.Description,
-                            DirectoryId = centralDir.Id,
-                            DeletedAt   = remoteDeletedAt
-                        };
-                        foreach (var ft in activeTag.FileTags)
-                            deletedEntry.DeletedTagFiles.Add(new CentralDeletedTagFile { RelativePath = ft.FileRecord.RelativePath });
-                        centralDb.DeletedTags.Add(deletedEntry);
-                        localDeletedNames.Add(activeTag.Name);
-                    }
-                    centralDb.Tags.Remove(activeTag);
-                }
-                else if (!localDeletedNames.Contains(remoteName))
-                {
-                    // Tag doesn't exist locally but the remote says it was deleted — record it
-                    centralDb.DeletedTags.Add(new CentralDeletedTag
-                    {
-                        Name        = remoteName,
-                        Description = string.Empty,
-                        DirectoryId = centralDir.Id,
-                        DeletedAt   = remoteDeletedAt
-                    });
-                    localDeletedNames.Add(remoteName);
-                }
-            }
-            if (remoteDeletedTagNames.Count > 0)
-                centralDb.SaveChanges();
+                if (!remoteDeletedAtByName.TryGetValue(name, out var deletedAt) || !localDeletedNames.Add(name))
+                    continue;
 
-            // Import tags — skip any that are in the local deleted-tags list
+                var deletedEntry = new CentralDeletedTag
+                {
+                    Name        = removed.Tag.Name,
+                    Description = removed.Tag.Description,
+                    DirectoryId = centralDir.Id,
+                    DeletedAt   = deletedAt
+                };
+                foreach (var path in removed.Paths)
+                    deletedEntry.DeletedTagFiles.Add(new CentralDeletedTagFile { RelativePath = path });
+                centralDb.DeletedTags.Add(deletedEntry);
+            }
+
+            centralDb.SaveChanges();
+
+            // A tag deleted elsewhere disappears once none of our files still carry it;
+            // tags we added to other files after the deletion keep it alive.
+            foreach (var name in remoteDeletedAtByName.Keys)
+            {
+                var tag = centralDb.Tags
+                    .Include(t => t.FileTags)
+                    .FirstOrDefault(t => t.DirectoryId == centralDir.Id && t.Name.ToLower() == name.ToLower());
+                if (tag != null && tag.FileTags.Count == 0)
+                    centralDb.Tags.Remove(tag);
+            }
+            centralDb.SaveChanges();
+
+            // ── Import tags ─────────────────────────────────────────────────
+            var localTagNamesById = localTags.ToDictionary(t => t.Id, t => t.Name);
+            bool RemoteAssociationSurvives(LocalFileRecord file, LocalFileTag fileTag) =>
+                localTagNamesById.TryGetValue(fileTag.LocalTagId, out var tagName)
+                && !IsTombstoned(tombstones, file.RelativePath, tagName, fileTag.CreatedAt);
+
             var existingTags = centralDb.Tags
                 .Where(t => t.DirectoryId == centralDir.Id)
                 .ToList();
             var tagMapping = new Dictionary<int, int>();
-            var neededTagIds = useSelectiveFileSync
-                ? localFiles.SelectMany(f => f.LocalFileTags).Select(ft => ft.LocalTagId).ToHashSet()
-                : null;
-            var tagsToImport = useSelectiveFileSync
-                ? localTags.Where(t => neededTagIds!.Contains(t.Id)).ToList()
-                : localTags;
+            var neededTagIds = localFiles
+                .SelectMany(f => f.LocalFileTags.Where(ft => RemoteAssociationSurvives(f, ft)))
+                .Select(ft => ft.LocalTagId)
+                .ToHashSet();
+            // Unused tags are only imported from full (non-selective) databases, and never
+            // when the tag name was deleted here or elsewhere.
+            var tagsToImport = localTags
+                .Where(t => neededTagIds.Contains(t.Id) ||
+                            (!useSelectiveFileSync &&
+                             !localDeletedNames.Contains(t.Name) &&
+                             !remoteDeletedAtByName.ContainsKey(t.Name)))
+                .ToList();
 
             foreach (var localTag in tagsToImport)
             {
-                // Don't re-import a tag we've already deleted locally
-                if (localDeletedNames.Contains(localTag.Name))
-                    continue;
-
                 var existingTag = existingTags.FirstOrDefault(t =>
                     string.Equals(t.Name, localTag.Name, StringComparison.OrdinalIgnoreCase));
 
@@ -2159,20 +2387,31 @@ namespace FileTagger.Services
                         .Include(f => f.FileTags)
                         .First(f => f.Id == centralFileId);
 
-                    if (centralFile.FileTags.Count > 0)
+                    var survivingRemote = localFile.LocalFileTags
+                        .Where(ft => tagMapping.ContainsKey(ft.LocalTagId) && RemoteAssociationSurvives(localFile, ft))
+                        .ToList();
+
+                    // Older clients don't record per-file removals, so their tag set for a changed
+                    // file replaces ours. Tombstone-aware remotes are merged: removals arrive as tombstones.
+                    if (!remoteTracksTombstones)
                     {
-                        centralDb.FileTags.RemoveRange(centralFile.FileTags.ToList());
+                        var remoteTagIds = survivingRemote.Select(ft => tagMapping[ft.LocalTagId]).ToHashSet();
+                        centralDb.FileTags.RemoveRange(
+                            centralFile.FileTags.Where(ft => !remoteTagIds.Contains(ft.TagId)).ToList());
                     }
 
-                    foreach (var localFileTag in localFile.LocalFileTags)
+                    var centralTagIds = centralFile.FileTags.Select(ft => ft.TagId).ToHashSet();
+                    foreach (var localFileTag in survivingRemote)
                     {
-                        if (!tagMapping.ContainsKey(localFileTag.LocalTagId))
+                        var tagId = tagMapping[localFileTag.LocalTagId];
+                        if (!centralTagIds.Add(tagId))
                             continue;
 
                         centralDb.FileTags.Add(new CentralFileTag
                         {
                             FileRecordId = centralFileId,
-                            TagId = tagMapping[localFileTag.LocalTagId]
+                            TagId = tagId,
+                            CreatedAt = localFileTag.CreatedAt
                         });
                         associationsImported++;
                     }
@@ -2183,6 +2422,8 @@ namespace FileTagger.Services
                 var existingAssociations = centralDb.FileTags
                     .Where(ft => ft.FileRecord.DirectoryId == centralDir.Id)
                     .Select(ft => new { ft.FileRecordId, ft.TagId })
+                    .AsEnumerable()
+                    .Select(a => (a.FileRecordId, a.TagId))
                     .ToHashSet();
 
                 foreach (var localFile in localFiles)
@@ -2194,17 +2435,19 @@ namespace FileTagger.Services
 
                     foreach (var localFileTag in localFile.LocalFileTags)
                     {
-                        if (!tagMapping.ContainsKey(localFileTag.LocalTagId))
+                        if (!tagMapping.ContainsKey(localFileTag.LocalTagId) ||
+                            !RemoteAssociationSurvives(localFile, localFileTag))
                             continue;
 
                         var newTagId = tagMapping[localFileTag.LocalTagId];
 
-                        if (!existingAssociations.Any(a => a.FileRecordId == newFileId && a.TagId == newTagId))
+                        if (existingAssociations.Add((newFileId, newTagId)))
                         {
                             centralDb.FileTags.Add(new CentralFileTag
                             {
                                 FileRecordId = newFileId,
-                                TagId = newTagId
+                                TagId = newTagId,
+                                CreatedAt = localFileTag.CreatedAt
                             });
                             associationsImported++;
                         }

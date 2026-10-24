@@ -15,6 +15,7 @@ namespace FileTagger.Data
         public DbSet<LocalTag> LocalTags { get; set; }
         public DbSet<LocalFileTag> LocalFileTags { get; set; }
         public DbSet<LocalDeletedTag> LocalDeletedTags { get; set; }
+        public DbSet<LocalFileTagTombstone> LocalFileTagTombstones { get; set; }
 
         public DirectoryDbContext(string directoryPath)
         {

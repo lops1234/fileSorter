@@ -21,6 +21,7 @@ namespace FileTagger.Data
         public DbSet<CentralFileTag> FileTags { get; set; }
         public DbSet<CentralDeletedTag> DeletedTags { get; set; }
         public DbSet<CentralDeletedTagFile> DeletedTagFiles { get; set; }
+        public DbSet<CentralFileTagTombstone> FileTagTombstones { get; set; }
 
         public static string GetDatabasePath() => DbPath;
 
@@ -96,6 +97,15 @@ namespace FileTagger.Data
                 .WithOne(f => f.DeletedTag)
                 .HasForeignKey(f => f.DeletedTagId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<CentralFileTagTombstone>()
+                .HasOne(t => t.Directory)
+                .WithMany()
+                .HasForeignKey(t => t.DirectoryId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<CentralFileTagTombstone>()
+                .HasIndex(t => new { t.DirectoryId, t.TagName });
         }
     }
 }

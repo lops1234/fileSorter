@@ -158,5 +158,30 @@ namespace FileTagger.Data
         // Navigation property
         public virtual CentralDeletedTag DeletedTag { get; set; } = null!;
     }
+
+    /// <summary>
+    /// Records that a tag was removed from a specific file. Synced to folder databases so
+    /// other machines remove the same association, while associations created after
+    /// DeletedAt (e.g. someone re-tagging the file) survive the merge.
+    /// </summary>
+    public class CentralFileTagTombstone
+    {
+        [Key]
+        public int Id { get; set; }
+
+        [ForeignKey(nameof(Directory))]
+        public int DirectoryId { get; set; }
+
+        [Required]
+        public string RelativePath { get; set; } = string.Empty;
+
+        [Required]
+        [MaxLength(100)]
+        public string TagName { get; set; } = string.Empty;
+
+        public DateTime DeletedAt { get; set; } = DateTime.UtcNow;
+
+        public virtual CentralDirectory Directory { get; set; } = null!;
+    }
 }
 
