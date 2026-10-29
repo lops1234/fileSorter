@@ -25,17 +25,20 @@ namespace FileTagger.Services
         private Dictionary<string, string> _tempToOriginalMapping = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         private TempResultsManager()
+            : this(Path.Combine(Path.GetTempPath(), "FileTagger_SearchResults"))
         {
-            InitializeTempDirectory();
         }
 
-        private void InitializeTempDirectory()
+        internal TempResultsManager(string tempDirectoryPath)
+        {
+            InitializeTempDirectory(tempDirectoryPath);
+        }
+
+        private void InitializeTempDirectory(string tempDirectoryPath)
         {
             try
             {
-                // Create temp directory in user's temp folder
-                var baseTempPath = Path.GetTempPath();
-                _tempDirectoryPath = Path.Combine(baseTempPath, "FileTagger_SearchResults");
+                _tempDirectoryPath = tempDirectoryPath;
                 
                 // Only create directory if it doesn't exist, don't clean up automatically
                 // Cleanup will be done explicitly when PrepareTempDirectory is called

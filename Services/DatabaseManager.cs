@@ -34,7 +34,17 @@ namespace FileTagger.Services
             }
         }
 
+        private List<string> _cachedActiveDirectories;
+        private DateTime _cachedActiveDirectoriesAt = DateTime.MinValue;
+        private static readonly TimeSpan ActiveDirectoryCacheLifetime = TimeSpan.FromMinutes(5);
+
         private DatabaseManager() { }
+
+        public void InvalidateActiveDirectoryCache()
+        {
+            _cachedActiveDirectories = null;
+            _cachedActiveDirectoriesAt = DateTime.MinValue;
+        }
 
         /// <summary>
         /// Get the path to the central database
@@ -96,6 +106,18 @@ namespace FileTagger.Services
                 )");
             db.Database.ExecuteSqlRaw(
                 "CREATE INDEX IF NOT EXISTS IX_FileTagTombstones_DirectoryId_TagName ON FileTagTombstones (DirectoryId, TagName)");
+
+            db.Database.ExecuteSqlRaw(@"
+                CREATE TABLE IF NOT EXISTS TagRenames (
+                    Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    DirectoryId INTEGER NOT NULL,
+                    OldName     TEXT    NOT NULL,
+                    NewName     TEXT    NOT NULL,
+                    RenamedAt   TEXT    NOT NULL,
+                    FOREIGN KEY (DirectoryId) REFERENCES Directories(Id) ON DELETE CASCADE
+                )");
+            db.Database.ExecuteSqlRaw(
+                "CREATE INDEX IF NOT EXISTS IX_TagRenames_DirectoryId ON TagRenames (DirectoryId)");
 
             MigrateToFileTagTombstones(db);
         }
@@ -165,8 +187,7 @@ namespace FileTagger.Services
         private void MigrateFromOldDatabaseStructure()
         {
             var oldMainDbPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "FileTagger", "main.db");
+                Path.GetDirectoryName(CentralDbContext.GetDatabasePath()) ?? string.Empty, "main.db");
 
             if (!File.Exists(oldMainDbPath))
                 return; // No old database to migrate
@@ -240,6 +261,7 @@ namespace FileTagger.Services
             }
 
             centralDb.SaveChanges();
+            InvalidateActiveDirectoryCache();
         }
 
         /// <summary>
@@ -256,6 +278,7 @@ namespace FileTagger.Services
             {
                 directory.IsActive = false;
                 centralDb.SaveChanges();
+                InvalidateActiveDirectoryCache();
             }
         }
 
@@ -271,13 +294,26 @@ namespace FileTagger.Services
                 .ToList();
         }
 
+        private List<string> GetAllActiveDirectoriesCached()
+        {
+            if (_cachedActiveDirectories != null &&
+                DateTime.UtcNow - _cachedActiveDirectoriesAt < ActiveDirectoryCacheLifetime)
+            {
+                return _cachedActiveDirectories;
+            }
+
+            _cachedActiveDirectories = GetAllActiveDirectories();
+            _cachedActiveDirectoriesAt = DateTime.UtcNow;
+            return _cachedActiveDirectories;
+        }
+
         /// <summary>
         /// Get the watched directory that contains a file
         /// Returns the most specific (deepest) watched directory
         /// </summary>
         public string GetWatchedDirectoryForFile(string filePath)
         {
-            var watchedDirs = GetAllActiveDirectories();
+            var watchedDirs = GetAllActiveDirectoriesCached();
             var fileDir = Path.GetDirectoryName(filePath) ?? "";
 
             return watchedDirs
@@ -329,6 +365,24 @@ namespace FileTagger.Services
         {
             relativePath = NormalizeRelativePath(relativePath);
 
+            var exact = centralDb.FileRecords.FirstOrDefault(f =>
+                f.DirectoryId == directoryId && f.RelativePath == relativePath);
+            if (exact != null)
+                return exact;
+
+            var alternateSeparator = relativePath.IndexOf('\\') >= 0
+                ? relativePath.Replace('\\', '/')
+                : relativePath.Replace('/', '\\');
+
+            if (!string.Equals(alternateSeparator, relativePath, StringComparison.Ordinal))
+            {
+                exact = centralDb.FileRecords.FirstOrDefault(f =>
+                    f.DirectoryId == directoryId && f.RelativePath == alternateSeparator);
+                if (exact != null)
+                    return exact;
+            }
+
+            // Legacy rows with unexpected casing/separators — rare fallback only.
             return centralDb.FileRecords
                 .Where(f => f.DirectoryId == directoryId)
                 .AsEnumerable()
@@ -401,7 +455,8 @@ namespace FileTagger.Services
                 }
 
                 // No folder database exists at all — bootstrap one by pushing central data to the folder.
-                if (result.DatabasesPulled == 0 && !skipBootstrap)
+                // Never when one exists but failed to import: the push would overwrite it.
+                if (result.DatabasesPulled == 0 && !skipBootstrap && !HasPullableFolderDatabase(directoryPath))
                 {
                     var pushResult = PushToFolder(directoryPath);
                     result.WasBootstrapped = true;
@@ -489,6 +544,9 @@ namespace FileTagger.Services
                 var tombstoneCutoff = DateTime.UtcNow - TombstoneRetention;
                 var tombstonesToPropagate = LoadTombstones(centralDb, centralDir.Id).Values
                     .Where(t => t.DeletedAt >= tombstoneCutoff)
+                    .ToList();
+                var renamesToPropagate = centralDb.TagRenames
+                    .Where(r => r.DirectoryId == centralDir.Id && r.RenamedAt >= tombstoneCutoff)
                     .ToList();
 
                 var centralTags = centralDb.Tags
@@ -595,6 +653,16 @@ namespace FileTagger.Services
                             RelativePath = tombstone.RelativePath,
                             TagName = tombstone.TagName,
                             DeletedAt = tombstone.DeletedAt
+                        });
+                    }
+
+                    foreach (var rename in renamesToPropagate)
+                    {
+                        folderDb.LocalTagRenames.Add(new LocalTagRename
+                        {
+                            OldName = rename.OldName,
+                            NewName = rename.NewName,
+                            RenamedAt = rename.RenamedAt
                         });
                     }
 
@@ -707,6 +775,11 @@ namespace FileTagger.Services
                         .Where(t => t.DirectoryId == centralDir.Id && t.DeletedAt < tombstoneCutoff)
                         .ToList();
                     centralDb.FileTagTombstones.RemoveRange(expiredTombstones);
+
+                    var expiredRenames = centralDb.TagRenames
+                        .Where(r => r.DirectoryId == centralDir.Id && r.RenamedAt < tombstoneCutoff)
+                        .ToList();
+                    centralDb.TagRenames.RemoveRange(expiredRenames);
 
                     centralDb.SaveChanges();
                 }
@@ -1048,18 +1121,33 @@ namespace FileTagger.Services
         /// </summary>
         public void UpdateTagName(string oldName, string newName)
         {
+            oldName = oldName?.Trim() ?? string.Empty;
+            newName = newName?.Trim() ?? string.Empty;
+            if (oldName.Length == 0 || newName.Length == 0 || string.Equals(oldName, newName, StringComparison.Ordinal))
+                return;
+
             using var centralDb = new CentralDbContext();
 
             var tagsToUpdate = centralDb.Tags
                 .Where(t => t.Name.ToLower() == oldName.ToLower())
                 .ToList();
 
-            foreach (var tag in tagsToUpdate)
+            var renamedAt = DateTime.UtcNow;
+            foreach (var directoryId in tagsToUpdate.Select(t => t.DirectoryId).Distinct())
             {
-                tag.Name = newName;
+                centralDb.TagRenames.Add(new CentralTagRename
+                {
+                    DirectoryId = directoryId,
+                    OldName = tagsToUpdate.First(t => t.DirectoryId == directoryId).Name,
+                    NewName = newName,
+                    RenamedAt = renamedAt
+                });
             }
 
             centralDb.SaveChanges();
+
+            foreach (var directoryId in tagsToUpdate.Select(t => t.DirectoryId).Distinct())
+                ApplyTagRenames(centralDb, directoryId);
         }
 
         /// <summary>
@@ -1541,32 +1629,68 @@ namespace FileTagger.Services
         /// </summary>
         public List<string> GetTagsForFile(string filePath)
         {
-            var watchedDir = GetWatchedDirectoryForFile(filePath);
-            if (string.IsNullOrEmpty(watchedDir))
-                return new List<string>();
+            return GetManageTagsSnapshot(new[] { filePath }).TagsByFile
+                .TryGetValue(filePath, out var tags)
+                ? tags
+                : new List<string>();
+        }
+
+        public ManageTagsSnapshot GetManageTagsSnapshot(IReadOnlyList<string> filePaths)
+        {
+            var snapshot = new ManageTagsSnapshot();
+
+            if (filePaths == null || filePaths.Count == 0)
+                return snapshot;
 
             using var centralDb = new CentralDbContext();
 
-            var centralDir = centralDb.Directories.FirstOrDefault(d =>
-                d.DirectoryPath.ToLower() == watchedDir.ToLower());
+            var watchedDirs = GetAllActiveDirectoriesCached();
+            var directoryLookup = centralDb.Directories
+                .Where(d => d.IsActive)
+                .ToDictionary(d => d.DirectoryPath, d => d, StringComparer.OrdinalIgnoreCase);
 
-            if (centralDir == null)
-                return new List<string>();
+            foreach (var filePath in filePaths.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(filePath))
+                    continue;
 
-            if (!TryGetRelativePathForWatchedFile(watchedDir, filePath, out var relativePath))
-                return new List<string>();
+                var fileDir = Path.GetDirectoryName(filePath) ?? string.Empty;
+                var watchedDir = watchedDirs
+                    .Where(wd => fileDir.StartsWith(wd, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(wd => wd.Length)
+                    .FirstOrDefault();
 
-            var fileRecord = FindCentralFileRecord(centralDb, centralDir.Id, relativePath);
+                if (string.IsNullOrEmpty(watchedDir) ||
+                    !directoryLookup.TryGetValue(watchedDir, out var centralDir) ||
+                    !TryGetRelativePathForWatchedFile(watchedDir, filePath, out var relativePath))
+                {
+                    snapshot.TagsByFile[filePath] = new List<string>();
+                    continue;
+                }
 
-            if (fileRecord == null)
-                return new List<string>();
+                var fileRecord = FindCentralFileRecord(centralDb, centralDir.Id, relativePath);
+                if (fileRecord == null)
+                {
+                    snapshot.TagsByFile[filePath] = new List<string>();
+                    continue;
+                }
 
-            return centralDb.FileTags
-                .Where(ft => ft.FileRecordId == fileRecord.Id)
-                .Include(ft => ft.Tag)
-                .Where(ft => ft.Tag != null)
-                .Select(ft => ft.Tag.Name)
+                snapshot.TagsByFile[filePath] = centralDb.FileTags
+                    .Where(ft => ft.FileRecordId == fileRecord.Id)
+                    .Include(ft => ft.Tag)
+                    .Where(ft => ft.Tag != null)
+                    .Select(ft => ft.Tag.Name)
+                    .ToList();
+            }
+
+            snapshot.AllTagNames = centralDb.Tags
+                .Where(t => t.Directory.IsActive)
+                .Select(t => t.Name)
+                .Distinct()
+                .OrderBy(n => n)
                 .ToList();
+
+            return snapshot;
         }
 
         /// <summary>
@@ -1918,6 +2042,19 @@ namespace FileTagger.Services
             }
         }
 
+        private static string CreateUpgradedFolderDbCopy(string dbPath)
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "FileTagger_Legacy_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            var copyPath = Path.Combine(tempDir, "tags.db");
+            File.Copy(dbPath, copyPath);
+
+            using var connection = new SqliteConnection($"Data Source={copyPath};Pooling=False");
+            connection.Open();
+            EnsureFolderDbSchema(connection);
+            return copyPath;
+        }
+
         private static bool FolderDbHasColumn(SqliteConnection connection, string table, string column)
         {
             using var cmd = connection.CreateCommand();
@@ -1981,6 +2118,9 @@ namespace FileTagger.Services
         // CreatedAt <= DeletedAt; associations created later win over the deletion.
 
         private static readonly TimeSpan TombstoneRetention = TimeSpan.FromDays(180);
+
+        /// <summary>CreatedAt of associations from before tombstones existed (set by the upgrade).</summary>
+        private static readonly DateTime UnknownAssociationCreatedAt = DateTime.MinValue;
 
         private static string TombstoneKey(string relativePath, string tagName) =>
             NormalizeRelativePath(relativePath).ToUpperInvariant() + "\0" + tagName.ToUpperInvariant();
@@ -2048,6 +2188,267 @@ namespace FileTagger.Services
             string relativePath, string tagName, DateTime associationCreatedAt) =>
             tombstones.TryGetValue(TombstoneKey(relativePath, tagName), out var tombstone)
             && tombstone.DeletedAt >= associationCreatedAt;
+
+        // ── Tag renames ──────────────────────────────────────────────────────
+        // A rename (old → new, RenamedAt) moves associations of the old name with
+        // CreatedAt <= RenamedAt to the new name; associations made later keep the old name.
+        // Moved associations get CreatedAt = RenamedAt + 1 tick on every machine.
+
+        private static void MergeTagRenames(
+            CentralDbContext centralDb, int directoryId,
+            IEnumerable<(string OldName, string NewName, DateTime RenamedAt)> remoteRenames)
+        {
+            static string Key(string oldName, string newName, DateTime renamedAt) =>
+                oldName + "\0" + newName + "\0" + renamedAt.Ticks;
+
+            var cutoff = DateTime.UtcNow - TombstoneRetention;
+            var known = centralDb.TagRenames
+                .Where(r => r.DirectoryId == directoryId)
+                .AsEnumerable()
+                .Select(r => Key(r.OldName, r.NewName, r.RenamedAt))
+                .ToHashSet(StringComparer.Ordinal);
+
+            foreach (var (oldName, newName, renamedAt) in remoteRenames)
+            {
+                if (renamedAt < cutoff || !known.Add(Key(oldName, newName, renamedAt)))
+                    continue;
+
+                centralDb.TagRenames.Add(new CentralTagRename
+                {
+                    DirectoryId = directoryId,
+                    OldName     = oldName,
+                    NewName     = newName,
+                    RenamedAt   = renamedAt
+                });
+            }
+
+            centralDb.SaveChanges();
+        }
+
+        /// <summary>
+        /// Applies every recorded rename for the directory to the central database, oldest first.
+        /// Idempotent: already-moved associations are newer than the rename and are left alone.
+        /// </summary>
+        private static List<CentralTagRename> ApplyTagRenames(CentralDbContext centralDb, int directoryId)
+        {
+            var renames = centralDb.TagRenames
+                .Where(r => r.DirectoryId == directoryId)
+                .AsEnumerable()
+                .OrderBy(r => r.RenamedAt)
+                .ThenBy(r => r.Id)
+                .ToList();
+
+            if (renames.Count == 0)
+                return renames;
+
+            var tags = centralDb.Tags
+                .Include(t => t.FileTags)
+                    .ThenInclude(ft => ft.FileRecord)
+                .Where(t => t.DirectoryId == directoryId)
+                .ToList();
+            var tombstones = LoadTombstones(centralDb, directoryId);
+            var removed = new HashSet<CentralFileTag>();
+
+            foreach (var rename in renames)
+            {
+                var source = tags.FirstOrDefault(t =>
+                    string.Equals(t.Name, rename.OldName, StringComparison.OrdinalIgnoreCase));
+                if (source == null)
+                    continue;
+
+                var sourceIsStale = source.CreatedAt <= rename.RenamedAt;
+
+                if (string.Equals(rename.OldName, rename.NewName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (sourceIsStale)
+                        source.Name = rename.NewName;
+                    continue;
+                }
+
+                var remaining = source.FileTags.Where(ft => !removed.Contains(ft)).ToList();
+                var moving = remaining.Where(ft => ft.CreatedAt <= rename.RenamedAt).ToList();
+                var everythingMoves = sourceIsStale && moving.Count == remaining.Count;
+                if (moving.Count == 0 && !everythingMoves)
+                    continue;
+
+                var movedCreatedAt = rename.RenamedAt.AddTicks(1);
+                var target = tags.FirstOrDefault(t => t != source &&
+                    string.Equals(t.Name, rename.NewName, StringComparison.OrdinalIgnoreCase));
+
+                // Rename in place when nothing stays behind, keeping the tag's description and history.
+                if (target == null && everythingMoves)
+                {
+                    foreach (var ft in moving)
+                    {
+                        UpsertTombstone(centralDb, tombstones, directoryId, ft.FileRecord.RelativePath, source.Name, rename.RenamedAt);
+                        ft.CreatedAt = movedCreatedAt;
+                    }
+                    source.Name = rename.NewName;
+                    continue;
+                }
+
+                if (target == null)
+                {
+                    target = new CentralTag
+                    {
+                        Name        = rename.NewName,
+                        Description = source.Description,
+                        DirectoryId = directoryId,
+                        CreatedAt   = source.CreatedAt,
+                        LastUsedAt  = source.LastUsedAt
+                    };
+                    centralDb.Tags.Add(target);
+                    tags.Add(target);
+                }
+
+                foreach (var ft in moving)
+                {
+                    UpsertTombstone(centralDb, tombstones, directoryId, ft.FileRecord.RelativePath, source.Name, rename.RenamedAt);
+                    centralDb.FileTags.Remove(ft);
+                    removed.Add(ft);
+
+                    if (target.FileTags.Any(t => !removed.Contains(t) && t.FileRecordId == ft.FileRecordId))
+                        continue;
+
+                    target.FileTags.Add(new CentralFileTag
+                    {
+                        FileRecordId = ft.FileRecordId,
+                        FileRecord   = ft.FileRecord,
+                        Tag          = target,
+                        CreatedAt    = movedCreatedAt
+                    });
+                }
+
+                if (everythingMoves)
+                {
+                    centralDb.Tags.Remove(source);
+                    tags.Remove(source);
+                }
+            }
+
+            centralDb.SaveChanges();
+            return renames;
+        }
+
+        /// <summary>
+        /// A removal made after a rename, by a machine that had not seen the rename yet, also
+        /// removes the renamed association.
+        /// </summary>
+        private static void ApplyRenamesToTombstones(
+            CentralDbContext centralDb,
+            Dictionary<string, CentralFileTagTombstone> tombstones,
+            int directoryId, IReadOnlyList<CentralTagRename> renames)
+        {
+            if (renames.Count == 0)
+                return;
+
+            foreach (var tombstone in tombstones.Values.ToList())
+            {
+                var tagName = tombstone.TagName;
+                foreach (var rename in renames)
+                {
+                    if (tombstone.DeletedAt <= rename.RenamedAt ||
+                        !string.Equals(tagName, rename.OldName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    tagName = rename.NewName;
+                    UpsertTombstone(centralDb, tombstones, directoryId, tombstone.RelativePath, tagName, tombstone.DeletedAt);
+                }
+            }
+        }
+
+        /// <summary>Follows the rename chain for a tag name; null when no rename applies.</summary>
+        private static (string Name, DateTime RenamedAt)? ResolveTagRename(
+            IReadOnlyList<CentralTagRename> renames, string tagName, DateTime createdAt)
+        {
+            (string Name, DateTime RenamedAt)? result = null;
+            foreach (var rename in renames)
+            {
+                if (createdAt > rename.RenamedAt ||
+                    !string.Equals(tagName, rename.OldName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                tagName = rename.NewName;
+                createdAt = rename.RenamedAt.AddTicks(1);
+                result = (tagName, rename.RenamedAt);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Rewrites remote associations and unused tags that still carry a renamed-away name so they
+        /// import under the new name. Returns IDs of remote tags that must not be imported as-is.
+        /// </summary>
+        private static HashSet<int> TranslateRenamedRemoteTags(
+            IReadOnlyList<CentralTagRename> renames, List<LocalTag> localTags, List<LocalFileRecord> localFiles)
+        {
+            var renamedAway = new HashSet<int>();
+            if (renames.Count == 0)
+                return renamedAway;
+
+            var tagsById = localTags.ToDictionary(t => t.Id);
+            var tagsByName = localTags
+                .GroupBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+            // Tags that exist only in memory get negative IDs so they never collide with remote ones.
+            var nextSyntheticId = Math.Min(0, localTags.Select(t => t.Id).DefaultIfEmpty(0).Min()) - 1;
+
+            LocalTag GetOrAddTag(string name, LocalTag source)
+            {
+                if (tagsByName.TryGetValue(name, out var tag))
+                {
+                    if (tag == source)
+                        tag.Name = name;
+                    return tag;
+                }
+
+                tag = new LocalTag
+                {
+                    Id          = nextSyntheticId--,
+                    Name        = name,
+                    Description = source.Description,
+                    CreatedAt   = source.CreatedAt,
+                    LastUsedAt  = source.LastUsedAt
+                };
+                localTags.Add(tag);
+                tagsById[tag.Id] = tag;
+                tagsByName[name] = tag;
+                return tag;
+            }
+
+            foreach (var fileTag in localFiles.SelectMany(f => f.LocalFileTags))
+            {
+                if (!tagsById.TryGetValue(fileTag.LocalTagId, out var source))
+                    continue;
+
+                var renamed = ResolveTagRename(renames, source.Name, fileTag.CreatedAt);
+                if (renamed == null)
+                    continue;
+
+                fileTag.LocalTagId = GetOrAddTag(renamed.Value.Name, source).Id;
+                fileTag.CreatedAt = renamed.Value.RenamedAt.AddTicks(1);
+            }
+
+            var usedTagIds = localFiles
+                .SelectMany(f => f.LocalFileTags)
+                .Select(ft => ft.LocalTagId)
+                .ToHashSet();
+
+            foreach (var tag in localTags.ToList())
+            {
+                if (usedTagIds.Contains(tag.Id))
+                    continue;
+
+                var renamed = ResolveTagRename(renames, tag.Name, tag.CreatedAt);
+                if (renamed == null || string.Equals(renamed.Value.Name, tag.Name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                renamedAway.Add(tag.Id);
+                GetOrAddTag(renamed.Value.Name, tag);
+            }
+
+            return renamedAway;
+        }
 
         private static HashSet<string> GetCentralFileTagNames(
             int fileRecordId,
@@ -2135,6 +2536,7 @@ namespace FileTagger.Services
             // LocalFileTag.CreatedAt values are real tagging times.
             var remoteTombstones = new List<(string RelativePath, string TagName, DateTime DeletedAt)>();
             var remoteTracksTombstones = false;
+            var remoteRenames = new List<(string OldName, string NewName, DateTime RenamedAt)>();
 
             // Read data using a direct SQLite connection to avoid connection pooling issues
             var connectionString = $"Data Source={dbPath};Mode=ReadOnly;Pooling=False";
@@ -2175,9 +2577,24 @@ namespace FileTagger.Services
                         remoteTombstones.Add((reader.GetString(0), reader.GetString(1), reader.GetDateTime(2)));
                 }
 
-                using (var folderDb = new DirectoryDbContext(centralDir.DirectoryPath))
+                if (FolderDbHasTable(connection, "LocalTagRenames"))
                 {
-                    folderDb.Database.SetConnectionString(connectionString);
+                    using var cmd = connection.CreateCommand();
+                    cmd.CommandText = "SELECT OldName, NewName, RenamedAt FROM LocalTagRenames";
+                    using var reader = cmd.ExecuteReader();
+                    while (reader.Read())
+                        remoteRenames.Add((reader.GetString(0), reader.GetString(1), reader.GetDateTime(2)));
+                }
+
+                // Databases from older versions lack columns the EF model maps (PushedNew): read them
+                // through an upgraded temporary copy rather than modifying the remote file.
+                var upgradedCopyPath = useSelectiveFileSync ? null : CreateUpgradedFolderDbCopy(dbPath);
+                try
+                {
+                    using var folderDb = new DirectoryDbContext(centralDir.DirectoryPath);
+                    folderDb.Database.SetConnectionString(upgradedCopyPath == null
+                        ? connectionString
+                        : $"Data Source={upgradedCopyPath};Mode=ReadOnly;Pooling=False");
 
                     localTags = folderDb.LocalTags.ToList();
                     localFiles = folderDb.LocalFileRecords
@@ -2185,6 +2602,13 @@ namespace FileTagger.Services
                         .ToList();
 
                     folderDb.Database.CloseConnection();
+                }
+                finally
+                {
+                    if (upgradedCopyPath != null)
+                    {
+                        try { Directory.Delete(Path.GetDirectoryName(upgradedCopyPath)!, true); } catch { }
+                    }
                 }
 
                 connection.Close();
@@ -2197,16 +2621,24 @@ namespace FileTagger.Services
             if (!remoteTracksTombstones)
             {
                 foreach (var localFileTag in localFiles.SelectMany(f => f.LocalFileTags))
-                    localFileTag.CreatedAt = DateTime.MinValue;
+                    localFileTag.CreatedAt = UnknownAssociationCreatedAt;
             }
             
             // Clear the connection from pool immediately
             SqliteConnection.ClearPool(new SqliteConnection(connectionString));
 
+            // ── Merge renames ───────────────────────────────────────────────
+            // Applied before deletions so tombstones for old names cover the renamed files,
+            // and remote associations still using an old name arrive under the new one.
+            MergeTagRenames(centralDb, centralDir.Id, remoteRenames);
+            var renames = ApplyTagRenames(centralDb, centralDir.Id);
+            var renamedAwayTagIds = TranslateRenamedRemoteTags(renames, localTags, localFiles);
+
             // ── Merge deletions ─────────────────────────────────────────────
             var tombstones = LoadTombstones(centralDb, centralDir.Id);
             foreach (var (relativePath, tagName, deletedAt) in remoteTombstones)
                 UpsertTombstone(centralDb, tombstones, centralDir.Id, relativePath, tagName, deletedAt);
+            ApplyRenamesToTombstones(centralDb, tombstones, centralDir.Id, renames);
 
             var remoteDeletedAtByName = remoteDeletedTagNames
                 .GroupBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
@@ -2271,15 +2703,15 @@ namespace FileTagger.Services
 
             // A tag deleted elsewhere disappears once none of our files still carry it;
             // tags we added to other files after the deletion keep it alive.
-            foreach (var name in remoteDeletedAtByName.Keys)
-            {
-                var tag = centralDb.Tags
-                    .Include(t => t.FileTags)
-                    .FirstOrDefault(t => t.DirectoryId == centralDir.Id && t.Name.ToLower() == name.ToLower());
-                if (tag != null && tag.FileTags.Count == 0)
-                    centralDb.Tags.Remove(tag);
-            }
+            var unusedTags = centralDb.Tags
+                .Where(t => t.DirectoryId == centralDir.Id && !t.FileTags.Any())
+                .ToList();
+            centralDb.Tags.RemoveRange(unusedTags.Where(t => remoteDeletedAtByName.ContainsKey(t.Name)));
             centralDb.SaveChanges();
+
+            // Tags that lose associations in this pull; removed at the end if left unused
+            // and the remote no longer has them.
+            var emptiedTagCandidates = removedPathsByTag.Values.Select(r => r.Tag.Id).ToHashSet();
 
             // ── Import tags ─────────────────────────────────────────────────
             var localTagNamesById = localTags.ToDictionary(t => t.Id, t => t.Name);
@@ -2300,6 +2732,7 @@ namespace FileTagger.Services
             var tagsToImport = localTags
                 .Where(t => neededTagIds.Contains(t.Id) ||
                             (!useSelectiveFileSync &&
+                             !renamedAwayTagIds.Contains(t.Id) &&
                              !localDeletedNames.Contains(t.Name) &&
                              !remoteDeletedAtByName.ContainsKey(t.Name)))
                 .ToList();
@@ -2391,14 +2824,17 @@ namespace FileTagger.Services
                         .Where(ft => tagMapping.ContainsKey(ft.LocalTagId) && RemoteAssociationSurvives(localFile, ft))
                         .ToList();
 
-                    // Older clients don't record per-file removals, so their tag set for a changed
-                    // file replaces ours. Tombstone-aware remotes are merged: removals arrive as tombstones.
-                    if (!remoteTracksTombstones)
-                    {
-                        var remoteTagIds = survivingRemote.Select(ft => tagMapping[ft.LocalTagId]).ToHashSet();
-                        centralDb.FileTags.RemoveRange(
-                            centralFile.FileTags.Where(ft => !remoteTagIds.Contains(ft.TagId)).ToList());
-                    }
+                    // Removals made without a tombstone (older clients, or before the upgrade) are only
+                    // visible as a missing tag in the remote's set for a changed file. For those
+                    // associations the remote set wins, as it always did; associations with a real
+                    // CreatedAt are merged, since their removals arrive as tombstones.
+                    var remoteTagIds = survivingRemote.Select(ft => tagMapping[ft.LocalTagId]).ToHashSet();
+                    var removedWithoutTombstone = centralFile.FileTags
+                        .Where(ft => !remoteTagIds.Contains(ft.TagId) &&
+                                     (!remoteTracksTombstones || ft.CreatedAt == UnknownAssociationCreatedAt))
+                        .ToList();
+                    centralDb.FileTags.RemoveRange(removedWithoutTombstone);
+                    emptiedTagCandidates.UnionWith(removedWithoutTombstone.Select(ft => ft.TagId));
 
                     var centralTagIds = centralFile.FileTags.Select(ft => ft.TagId).ToHashSet();
                     foreach (var localFileTag in survivingRemote)
@@ -2456,6 +2892,18 @@ namespace FileTagger.Services
             }
 
             centralDb.SaveChanges();
+
+            if (emptiedTagCandidates.Count > 0)
+            {
+                var remoteTagNames = localTags.Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var emptiedTags = centralDb.Tags
+                    .Where(t => emptiedTagCandidates.Contains(t.Id) && !t.FileTags.Any())
+                    .AsEnumerable()
+                    .Where(t => !remoteTagNames.Contains(t.Name))
+                    .ToList();
+                centralDb.Tags.RemoveRange(emptiedTags);
+                centralDb.SaveChanges();
+            }
 
             return (tagsImported, filesImported, associationsImported);
         }
@@ -2564,6 +3012,14 @@ namespace FileTagger.Services
         public List<string> MissingFiles { get; set; } = new List<string>();
         public List<string> AffectedTags { get; set; } = new List<string>();
         public List<string> Errors { get; set; } = new List<string>();
+    }
+
+    public class ManageTagsSnapshot
+    {
+        public Dictionary<string, List<string>> TagsByFile { get; } =
+            new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+        public List<string> AllTagNames { get; set; } = new List<string>();
     }
 
     /// <summary>

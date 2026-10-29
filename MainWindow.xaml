@@ -172,6 +172,8 @@
                                 Margin="0,0,10,0" ToolTip="Save all tags as a comma-separated text file"/>
                         <Button x:Name="SaveTagChangesButton" Content="Save Changes" Click="SaveTagChanges_Click" 
                                 IsEnabled="False" Margin="0,0,10,0" ToolTip="Save tag name and description changes"/>
+                        <Button x:Name="RenameTagButton" Content="Rename Selected Tag" Click="RenameTag_Click" IsEnabled="False"
+                                Margin="0,0,10,0" ToolTip="Rename the tag on all files; the rename syncs to folder databases on push"/>
                         <Button x:Name="DeleteTagButton" Content="Delete Selected Tag" Click="DeleteTag_Click" IsEnabled="False"/>
                         <Button x:Name="RefreshTagsButton" Content="Refresh Tags" Click="RefreshTags_Click" 
                                 ToolTip="Resynchronize tags and remove orphaned tags with zero file associations"/>

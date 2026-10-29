@@ -183,5 +183,31 @@ namespace FileTagger.Data
 
         public virtual CentralDirectory Directory { get; set; } = null!;
     }
+
+    /// <summary>
+    /// Records that a tag was renamed. Synced to folder databases so other machines rename
+    /// the tag on files tagged with the old name up to RenamedAt, including files this
+    /// machine never saw.
+    /// </summary>
+    public class CentralTagRename
+    {
+        [Key]
+        public int Id { get; set; }
+
+        [ForeignKey(nameof(Directory))]
+        public int DirectoryId { get; set; }
+
+        [Required]
+        [MaxLength(100)]
+        public string OldName { get; set; } = string.Empty;
+
+        [Required]
+        [MaxLength(100)]
+        public string NewName { get; set; } = string.Empty;
+
+        public DateTime RenamedAt { get; set; } = DateTime.UtcNow;
+
+        public virtual CentralDirectory Directory { get; set; } = null!;
+    }
 }
 

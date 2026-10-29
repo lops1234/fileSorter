@@ -317,6 +317,7 @@ The application minimizes to the system tray when closed, showing a blue folder 
 - `ShellIntegration.cs`: Windows Explorer context menu integration
 - `CommandLineHandler.cs`: Handles context menu command line arguments
 - `MainWindow.xaml/cs`: Main application interface
+- `FileTagger.Tests/`: xUnit test project (see [Tests](#tests))
 
 ### Hierarchical Directory System
 
@@ -335,6 +336,58 @@ The application minimizes to the system tray when closed, showing a blue folder 
 - New databases are only created for directories explicitly added to settings
 - Subdirectories use their parent's database
 - Each database is stored in a hidden `.filetagger` folder within the directory
+
+## Tests
+
+The `FileTagger.Tests` project contains xUnit tests for all functionality except AI auto-tagging and the WPF windows.
+
+### Running the Tests
+
+```powershell
+cd FileTagger.Tests
+
+# Everything (about 20 seconds)
+dotnet test
+
+# Only remote database sync tests
+dotnet test --filter "FullyQualifiedName~FileTagger.Tests.Sync"
+
+# Only local (single machine) tests
+dotnet test --filter "FullyQualifiedName~FileTagger.Tests.Local"
+
+# A single test class or test
+dotnet test --filter "FullyQualifiedName~RenameSyncTests"
+```
+
+Tests can also be run from the Test Explorer in Visual Studio, Rider, or VS Code (C# Dev Kit).
+
+### Test Safety
+
+Tests never touch your real data. Each test creates its own folder under `%TEMP%\FileTaggerTests\` and deletes it afterwards. The central database location is redirected for the whole test run, so `%APPDATA%\FileTagger\filetagger.db` is not opened. Tests run one at a time because `DatabaseManager` is a shared singleton.
+
+### How Sync Tests Work
+
+Sync tests simulate several computers. Each simulated machine (`Machine` in `Infrastructure/`) has its own central database, and all machines watch the same folder, which plays the role of a cloud-synced directory containing the remote `.filetagger\tags.db`. A test makes changes on one machine, pushes and pulls in a chosen order, and then checks the tags on every machine and the contents of the folder database (`FolderDatabase` reads it directly).
+
+### Test Layout
+
+| Folder | What it covers |
+|---|---|
+| `Sync/PushTests.cs` | Creating and updating the folder database, change flags for other machines, error cases |
+| `Sync/PullTests.cs` | Importing on watch and on pull, bootstrapping, idempotency, databases from older app versions, unreadable databases are not overwritten |
+| `Sync/TagChangeSyncTests.cs` | Adding and removing tags across machines, concurrent edits, newest change wins, three-machine convergence |
+| `Sync/DeletedTagSyncTests.cs` | Tag deletion and Stash All propagation, restoring deleted tags, clearing the remote deleted-tags list |
+| `Sync/RenameSyncTests.cs` | Tag renames across machines: unseen files, chains, case-only renames, merging into existing names, renames combined with removals |
+| `Sync/FolderMaintenanceSyncTests.cs` | `.filetagger (1)` conflict copies: merging, deleting duplicates, folder cleanup |
+| `Local/` | Watched directories, tagging, renaming, descriptions, delete/stash/restore, file lists, missing-file cleanup, database discovery |
+| `Services/` | Search query parser, temporary search-results folder, tag list labels |
+| `Infrastructure/` | Test helpers: sandbox folders, simulated machines, folder database reader |
+
+### Writing New Tests
+
+- Single-machine tests: inherit from `LocalTestBase` (provides `Machine`, a watched `Folder`, and `CreateFile`).
+- Sync tests: inherit from `SyncTestBase` (provides machines `A` and `B`, the `Shared` folder, `StartSharedFolder` and `Remote()`). Create more machines with `Sandbox.CreateMachine("C")`.
+- Use `TestSandbox.Tick()` between steps whose order matters for "newest change wins" rules.
 
 ## License
 

@@ -10,10 +10,15 @@ namespace FileTagger.Data
     /// </summary>
     public class CentralDbContext : DbContext
     {
-        private static readonly string DbPath = Path.Combine(
+        private static readonly string DefaultDbPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), 
             "FileTagger", 
             "filetagger.db");
+
+        /// <summary>Redirects the central database (tests use one file per simulated machine).</summary>
+        internal static string DatabasePathOverride { get; set; }
+
+        private static string DbPath => DatabasePathOverride ?? DefaultDbPath;
 
         public DbSet<CentralDirectory> Directories { get; set; }
         public DbSet<CentralTag> Tags { get; set; }
@@ -22,6 +27,7 @@ namespace FileTagger.Data
         public DbSet<CentralDeletedTag> DeletedTags { get; set; }
         public DbSet<CentralDeletedTagFile> DeletedTagFiles { get; set; }
         public DbSet<CentralFileTagTombstone> FileTagTombstones { get; set; }
+        public DbSet<CentralTagRename> TagRenames { get; set; }
 
         public static string GetDatabasePath() => DbPath;
 
@@ -106,6 +112,15 @@ namespace FileTagger.Data
 
             modelBuilder.Entity<CentralFileTagTombstone>()
                 .HasIndex(t => new { t.DirectoryId, t.TagName });
+
+            modelBuilder.Entity<CentralTagRename>()
+                .HasOne(r => r.Directory)
+                .WithMany()
+                .HasForeignKey(r => r.DirectoryId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<CentralTagRename>()
+                .HasIndex(r => r.DirectoryId);
         }
     }
 }
