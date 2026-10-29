@@ -27,10 +27,22 @@ namespace FileTagger
         {
             InitializeComponent();
             CreateTrayIcon();
+            StartCliIpcServer();
             LoadDirectories();
             LoadTags();
             // Don't auto-load files anymore - only when search is pressed
             LoadTagFilter();
+        }
+
+        private void StartCliIpcServer()
+        {
+            CliIpc.StartServer(args =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    CommandLineHandler.HandleCommandLineArgsFromRunningApp(args);
+                }));
+            });
         }
 
         #region Tray Icon Creation

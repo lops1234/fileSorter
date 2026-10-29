@@ -17,14 +17,16 @@ namespace FileTagger
             // Handle command line arguments first (Explorer context menu, etc.)
             if (e.Args.Length > 0)
             {
-                CliConsole.Attach();
-                CliConsole.WriteArgs(e.Args);
+                if (string.Equals(Environment.GetEnvironmentVariable("FILETAGGER_DEBUG"), "1", StringComparison.Ordinal))
+                {
+                    CliConsole.Attach();
+                    CliConsole.WriteArgs(e.Args);
+                }
+
                 DispatcherUnhandledException += OnCliDispatcherUnhandledException;
 
                 try
                 {
-                    DatabaseManager.Instance.Initialize();
-
                     if (!CommandLineHandler.HandleCommandLineArgs(e.Args))
                     {
                         CliConsole.Show(
@@ -72,6 +74,7 @@ namespace FileTagger
 
         private void OnCliDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
         {
+            CliConsole.Attach();
             CliConsole.ShowError("File Tagger error", "An unexpected error occurred.", e.Exception);
             e.Handled = true;
         }
