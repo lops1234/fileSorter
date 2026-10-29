@@ -57,11 +57,14 @@
         <!-- Current Tags -->
         <TextBlock Grid.Row="3" Text="Current Tags:" FontWeight="Bold" Margin="0,0,0,5"/>
         <ListBox Grid.Row="3" x:Name="CurrentTagsListBox" Margin="0,25,0,0" 
+                 SelectionMode="Extended"
                  SelectionChanged="CurrentTagsListBox_SelectionChanged"
-                 DisplayMemberPath=".">
+                 KeyDown="CurrentTagsListBox_KeyDown"
+                 DisplayMemberPath="."
+                 ToolTip="Ctrl+click or Shift+click to select several tags">
             <ListBox.ContextMenu>
                 <ContextMenu>
-                    <MenuItem Header="Remove Tag" Click="RemoveTag_Click"/>
+                    <MenuItem Header="Remove Selected Tags" Click="RemoveTag_Click"/>
                 </ContextMenu>
             </ListBox.ContextMenu>
         </ListBox>

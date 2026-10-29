@@ -1119,6 +1119,78 @@ namespace FileTagger
         private void TagsDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             DeleteTagButton.IsEnabled = TagsDataGrid.SelectedItem != null;
+            RenameTagButton.IsEnabled = TagsDataGrid.SelectedItem != null;
+        }
+
+        private async void RenameTag_Click(object sender, RoutedEventArgs e)
+        {
+            if (TagsDataGrid.SelectedItem is not TagInfo selectedTag)
+                return;
+
+            var dialog = new RenameTagWindow(selectedTag.Name) { Owner = this };
+            if (dialog.ShowDialog() != true)
+                return;
+
+            var newName = dialog.NewName;
+            var existingTags = DatabaseManager.Instance.GetAllAvailableTags();
+            if (existingTags.Any(t => t.Name.Equals(newName, StringComparison.OrdinalIgnoreCase) &&
+                                      !t.Name.Equals(selectedTag.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show($"A tag named '{newName}' already exists.", "Duplicate Tag",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                DatabaseManager.Instance.UpdateTagName(selectedTag.Name, newName);
+                ClearTagEdits();
+                LoadTags();
+                LoadTagFilter();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error renaming tag: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            await OfferPushAfterRenameAsync(selectedTag.SourceDirectories);
+        }
+
+        private async Task OfferPushAfterRenameAsync(IReadOnlyCollection<string> directories)
+        {
+            var targets = directories
+                .Where(Directory.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (targets.Count == 0)
+                return;
+
+            var answer = MessageBox.Show(
+                "Push the rename to the folder databases now so other computers pick it up?\n\n" +
+                string.Join("\n", targets),
+                "Sync Rename", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes)
+                return;
+
+            try
+            {
+                ShowLoading("Pushing rename to folder databases…");
+                var results = await Task.Run(() => targets.Select(DatabaseManager.Instance.PushToFolder).ToList());
+                var errors = results.SelectMany(r => r.Errors).ToList();
+
+                MessageBox.Show(
+                    errors.Count == 0
+                        ? $"Rename pushed to {results.Count} folder database(s)."
+                        : "Push finished with errors:\n" + string.Join("\n", errors.Take(5)),
+                    "Sync Rename", MessageBoxButton.OK,
+                    errors.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            }
+            finally
+            {
+                HideLoading();
+                LoadTags();
+            }
         }
 
         private void TagsDataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
@@ -1166,13 +1238,15 @@ namespace FileTagger
             }
         }
 
-        private void SaveTagChanges_Click(object sender, RoutedEventArgs e)
+        private async void SaveTagChanges_Click(object sender, RoutedEventArgs e)
         {
             if (_editedTags.Count == 0)
             {
                 MessageBox.Show("No changes to save.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
+
+            var renamedDirectories = new List<string>();
 
             try
             {
@@ -1185,8 +1259,8 @@ namespace FileTagger
                     var originalName = edit.Key;
                     var (newName, newDescription) = edit.Value;
 
-                    // Check if name was changed
-                    if (!string.Equals(originalName, newName, StringComparison.OrdinalIgnoreCase))
+                    // Check if name was changed (case-only changes count as a rename)
+                    if (!string.Equals(originalName, newName, StringComparison.Ordinal))
                     {
                         if (string.IsNullOrWhiteSpace(newName))
                         {
@@ -1205,6 +1279,10 @@ namespace FileTagger
 
                         DatabaseManager.Instance.UpdateTagName(originalName, newName);
                         renamedCount++;
+
+                        var renamedTag = _allTags.FirstOrDefault(t => t.Name.Equals(originalName, StringComparison.OrdinalIgnoreCase));
+                        if (renamedTag != null)
+                            renamedDirectories.AddRange(renamedTag.SourceDirectories);
                     }
 
                     // Update description
@@ -1232,6 +1310,9 @@ namespace FileTagger
             {
                 MessageBox.Show($"Error saving changes: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+
+            if (renamedDirectories.Count > 0)
+                await OfferPushAfterRenameAsync(renamedDirectories);
         }
 
         private void ClearTagEdits()

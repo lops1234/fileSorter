@@ -33,6 +33,14 @@
 
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="FileTagger.Tests\**" />
+    <EmbeddedResource Remove="FileTagger.Tests\**" />
+    <None Remove="FileTagger.Tests\**" />
+    <Page Remove="FileTagger.Tests\**" />
+    <InternalsVisibleTo Include="FileTagger.Tests" />
+  </ItemGroup>
+
 
 
 

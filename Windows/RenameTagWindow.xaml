@@ -1,0 +1,19 @@
+<Window x:Class="FileTagger.Windows.RenameTagWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Rename Tag" SizeToContent="WidthAndHeight" MinWidth="380"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False">
+    <StackPanel Margin="15">
+        <TextBlock x:Name="CurrentNameTextBlock" FontWeight="Bold" Margin="0,0,0,8"/>
+        <TextBlock Text="New name:" Margin="0,0,0,4"/>
+        <TextBox x:Name="NewNameTextBox" Width="350" HorizontalAlignment="Left"/>
+        <TextBlock Text="The tag is renamed on all files in all directories. Push to sync the rename to folder databases."
+                   TextWrapping="Wrap" Width="350" Foreground="Gray" Margin="0,8,0,0" HorizontalAlignment="Left"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+            <Button Content="Rename" Click="Rename_Click" IsDefault="True" Padding="12,3" Margin="0,0,8,0"/>
+            <Button Content="Cancel" IsCancel="True" Padding="12,3"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -109,4 +109,21 @@ namespace FileTagger.Data
 
         public DateTime DeletedAt { get; set; } = DateTime.UtcNow;
     }
+
+    /// <summary>Tag rename propagated through the folder database.</summary>
+    public class LocalTagRename
+    {
+        [Key]
+        public int Id { get; set; }
+
+        [Required]
+        [MaxLength(100)]
+        public string OldName { get; set; } = string.Empty;
+
+        [Required]
+        [MaxLength(100)]
+        public string NewName { get; set; } = string.Empty;
+
+        public DateTime RenamedAt { get; set; } = DateTime.UtcNow;
+    }
 }

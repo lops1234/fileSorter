@@ -31,10 +31,16 @@ namespace FileTagger.Windows
         private readonly List<string> _originalFilePaths;
         private List<string> _autocompleteTagNames = new List<string>();
         private readonly List<string> _currentTagNames = new List<string>();
+        private ManageTagsSnapshot _preloadedSnapshot;
 
-        public TagManagementWindow(List<string> filePaths)
+        public TagManagementWindow(List<string> filePaths) : this(filePaths, null)
+        {
+        }
+
+        public TagManagementWindow(List<string> filePaths, ManageTagsSnapshot preloadedSnapshot)
         {
             InitializeComponent();
+            _preloadedSnapshot = preloadedSnapshot;
 
             if (filePaths == null || filePaths.Count == 0)
                 throw new ArgumentException("No file paths were provided.", nameof(filePaths));
@@ -65,21 +71,71 @@ namespace FileTagger.Windows
                 }
             }
             
-            // Update UI based on file count
+            UpdateFileHeader();
+            LoadCurrentTags();
+
+            Loaded += (_, __) =>
+            {
+                Dispatcher.BeginInvoke(new Action(LoadAvailableTags),
+                    System.Windows.Threading.DispatcherPriority.Background);
+            };
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to load tag management window: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Adds files to an already open window (e.g. late Explorer processes from the same selection).
+        /// </summary>
+        public void AddFiles(IEnumerable<string> filePaths)
+        {
+            var added = false;
+            foreach (var filePath in filePaths)
+            {
+                var resolvedPath = filePath;
+                if (TempResultsManager.Instance.IsInTempDirectory(filePath))
+                {
+                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePath);
+                    if (!string.IsNullOrEmpty(mappedPath))
+                        resolvedPath = mappedPath;
+                }
+
+                if (_filePaths.Contains(resolvedPath, StringComparer.OrdinalIgnoreCase))
+                    continue;
+
+                _originalFilePaths.Add(filePath);
+                _filePaths.Add(resolvedPath);
+                added = true;
+            }
+
+            if (!added)
+                return;
+
+            _preloadedSnapshot = null;
+            UpdateFileHeader();
+            LoadCurrentTags();
+            LoadAvailableTags();
+        }
+
+        private void UpdateFileHeader()
+        {
+            TempFileInfoPanel.Visibility = System.Windows.Visibility.Collapsed;
+
             if (_filePaths.Count == 1)
             {
                 FileHeaderTextBlock.Text = "File:";
                 FilePathTextBlock.Text = _filePaths[0];
-                TempFileInfoPanel.Visibility = System.Windows.Visibility.Collapsed;
-                
-                // Check if single file is from temp directory
-                if (TempResultsManager.Instance.IsInTempDirectory(filePaths[0]))
+
+                var originalPath = _originalFilePaths[0];
+                if (TempResultsManager.Instance.IsInTempDirectory(originalPath))
                 {
-                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(filePaths[0]);
+                    var mappedPath = TempResultsManager.Instance.GetOriginalFilePath(originalPath);
                     if (!string.IsNullOrEmpty(mappedPath))
                     {
                         TempFileInfoPanel.Visibility = System.Windows.Visibility.Visible;
-                        TempFilePathTextBlock.Text = filePaths[0];
+                        TempFilePathTextBlock.Text = originalPath;
                         OriginalFilePathTextBlock.Text = mappedPath;
                         FilePathTextBlock.Text = mappedPath;
                     }
@@ -93,22 +149,13 @@ namespace FileTagger.Windows
                 {
                     FilePathTextBlock.Text += $"\n... and {_filePaths.Count - 5} more";
                 }
-                TempFileInfoPanel.Visibility = System.Windows.Visibility.Collapsed;
-            }
-            
-            LoadCurrentTags();
-            LoadAvailableTags();
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException($"Failed to load tag management window: {ex.Message}", ex);
             }
         }
 
         private void EnsureTagNamesLoaded()
         {
             if (_autocompleteTagNames.Count == 0)
-                _autocompleteTagNames = DatabaseManager.Instance.GetAllTagNamesForPrompt();
+                _autocompleteTagNames = DatabaseManager.Instance.GetManageTagsSnapshot(_filePaths).AllTagNames;
         }
 
         // Convenience constructor for backward compatibility (single file)
@@ -132,12 +179,33 @@ namespace FileTagger.Windows
                 return;
             }
 
-            // Get tags for all files
             var allFileTags = new List<List<string>>();
-            foreach (var filePath in _filePaths)
+            if (_preloadedSnapshot != null)
             {
-                var tags = DatabaseManager.Instance.GetTagsForFile(filePath);
-                allFileTags.Add(tags);
+                _autocompleteTagNames = _preloadedSnapshot.AllTagNames;
+
+                foreach (var filePath in _filePaths)
+                {
+                    allFileTags.Add(
+                        _preloadedSnapshot.TagsByFile.TryGetValue(filePath, out var tags)
+                            ? tags
+                            : new List<string>());
+                }
+
+                _preloadedSnapshot = null;
+            }
+            else
+            {
+                var snapshot = DatabaseManager.Instance.GetManageTagsSnapshot(_filePaths);
+                _autocompleteTagNames = snapshot.AllTagNames;
+
+                foreach (var filePath in _filePaths)
+                {
+                    allFileTags.Add(
+                        snapshot.TagsByFile.TryGetValue(filePath, out var tags)
+                            ? tags
+                            : new List<string>());
+                }
             }
 
             if (_filePaths.Count == 1)
@@ -205,7 +273,18 @@ namespace FileTagger.Windows
 
         private void CurrentTagsListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            RemoveSelectedTagButton.IsEnabled = CurrentTagsListBox.SelectedItem != null;
+            var count = CurrentTagsListBox.SelectedItems.Count;
+            RemoveSelectedTagButton.IsEnabled = count > 0;
+            RemoveSelectedTagButton.Content = count > 1 ? $"Remove Selected ({count})" : "Remove Selected";
+        }
+
+        private void CurrentTagsListBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.Delete && CurrentTagsListBox.SelectedItems.Count > 0)
+            {
+                RemoveTag_Click(sender, e);
+                e.Handled = true;
+            }
         }
 
         private void RemoveSelectedTag_Click(object sender, RoutedEventArgs e)
@@ -215,25 +294,29 @@ namespace FileTagger.Windows
 
         private void RemoveTag_Click(object sender, RoutedEventArgs e)
         {
-            if (CurrentTagsListBox.SelectedItem is TagDisplayItem selectedTag)
+            var selectedTags = CurrentTagsListBox.SelectedItems.OfType<TagDisplayItem>().ToList();
+            if (selectedTags.Count == 0)
+                return;
+
+            try
             {
-                try
+                // Remove each tag from all selected files (only removes from files that have it)
+                foreach (var selectedTag in selectedTags)
                 {
-                    // Remove tag from all selected files (only removes from files that have it)
                     foreach (var filePath in _filePaths)
                     {
                         DatabaseManager.Instance.RemoveTagFromFile(filePath, selectedTag.TagName);
                     }
-                    
-                    RefreshTagNameCache();
-                    LoadCurrentTags();
-                    LoadAvailableTags();
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Error removing tag: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error removing tags: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+
+            RefreshTagNameCache();
+            LoadCurrentTags();
+            LoadAvailableTags();
         }
 
         private void CreateAndAddTag_Click(object sender, RoutedEventArgs e)
