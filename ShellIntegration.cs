@@ -14,6 +14,9 @@ namespace FileTagger
         private const string VIEW_TAGS_KEY = "FileTagger.ViewTags";
         private const string FILTER_BY_TAGS_KEY = "FileTagger.FilterByTags";
         
+        private const string DropTargetClassKey = @"Software\Classes\CLSID\" + ShellDropTarget.ManageTagsClsid;
+        private const string DropTargetServerKey = DropTargetClassKey + @"\LocalServer32";
+
         private static string _lastRegisteredExecutablePath = string.Empty;
 
         public static void RegisterContextMenu()
@@ -43,11 +46,24 @@ namespace FileTagger
                 {
                     key?.SetValue("", "Manage Tags");
                     key?.SetValue("AppliesTo", "*"); // Ensure it applies to all files
+                    key?.SetValue("MultiSelectModel", "Player");
                 }
 
                 using (var commandKey = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{SHELL_KEY}\{ADD_TAG_KEY}\command"))
                 {
                     commandKey?.SetValue("", $"\"{executablePath}\" --manage-tags \"%1\"");
+                }
+
+                // DropTarget takes precedence over "command": the verb stays visible for any selection
+                // size and Explorer hands every selected file to a single process.
+                using (var serverKey = Registry.CurrentUser.CreateSubKey(DropTargetServerKey))
+                {
+                    serverKey?.SetValue("", $"\"{executablePath}\"");
+                }
+
+                using (var dropTargetKey = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{SHELL_KEY}\{ADD_TAG_KEY}\DropTarget"))
+                {
+                    dropTargetKey?.SetValue("CLSID", ShellDropTarget.ManageTagsClsid);
                 }
 
                 // Register "View Tags" context menu
@@ -140,17 +156,22 @@ namespace FileTagger
                 using var addTagKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{SHELL_KEY}\{ADD_TAG_KEY}\command");
                 using var viewTagKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{SHELL_KEY}\{VIEW_TAGS_KEY}\command");
                 using var filterKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\Directory\shell\{FILTER_BY_TAGS_KEY}\command");
+                using var dropTargetKey = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{SHELL_KEY}\{ADD_TAG_KEY}\DropTarget");
+                using var serverKey = Registry.CurrentUser.OpenSubKey(DropTargetServerKey);
 
-                if (addTagKey == null || viewTagKey == null || filterKey == null)
+                if (addTagKey == null || viewTagKey == null || filterKey == null || dropTargetKey == null || serverKey == null)
                     return false;
 
                 var addTagCommand = addTagKey.GetValue("") as string;
                 var viewTagCommand = viewTagKey.GetValue("") as string;
                 var filterCommand = filterKey.GetValue("") as string;
+                var serverCommand = serverKey.GetValue("") as string;
 
                 return CommandTargetsExecutable(addTagCommand, executablePath)
                     && CommandTargetsExecutable(viewTagCommand, executablePath)
-                    && CommandTargetsExecutable(filterCommand, executablePath);
+                    && CommandTargetsExecutable(filterCommand, executablePath)
+                    && CommandTargetsExecutable(serverCommand, executablePath)
+                    && string.Equals(dropTargetKey.GetValue("CLSID") as string, ShellDropTarget.ManageTagsClsid, StringComparison.OrdinalIgnoreCase);
             }
             catch
             {
@@ -229,6 +250,7 @@ namespace FileTagger
                 // Remove file context menus
                 Registry.CurrentUser.DeleteSubKeyTree($@"Software\Classes\{SHELL_KEY}\{ADD_TAG_KEY}", false);
                 Registry.CurrentUser.DeleteSubKeyTree($@"Software\Classes\{SHELL_KEY}\{VIEW_TAGS_KEY}", false);
+                Registry.CurrentUser.DeleteSubKeyTree(DropTargetClassKey, false);
                 
                 // Remove directory context menus
                 Registry.CurrentUser.DeleteSubKeyTree($@"Software\Classes\Directory\shell\{FILTER_BY_TAGS_KEY}", false);

@@ -7,8 +7,8 @@ namespace FileTagger.Services
 {
     /// <summary>
     /// Parses and evaluates complex tag search queries
-    /// Supports: AND (&), OR (|), grouping with (), exclusion with -, spaces for AND, and quoted tags
-    /// Examples: "tag1 tag2", "tag1 & tag2", "tag1 | tag2", "(tag1 | tag2) & tag3", "-excluded tag1", "'tag with spaces'"
+    /// Supports: AND (&), OR (|), grouping with (), exclusion with -, exclusive tags with *, spaces for AND, and quoted tags
+    /// Examples: "tag1 tag2", "tag1 & tag2", "tag1 | tag2", "(tag1 | tag2) & tag3", "-excluded tag1", "'tag with spaces'", "*tag1 *tag2"
     /// </summary>
     public class TagSearchParser
     {
@@ -18,6 +18,11 @@ namespace FileTagger.Services
             public string ErrorMessage { get; set; } = string.Empty;
             public List<string> RequiredTags { get; set; } = new List<string>();
             public List<string> ExcludedTags { get; set; } = new List<string>();
+            /// <summary>
+            /// Tags marked with *. When any are present, files may only carry tags named in the query.
+            /// </summary>
+            public List<string> ExclusiveTags { get; set; } = new List<string>();
+            public bool IsExclusive => ExclusiveTags.Count > 0;
             public string NormalizedQuery { get; set; } = string.Empty;
         }
 
@@ -82,6 +87,12 @@ namespace FileTagger.Services
                 return false;
             }
 
+            if (parseResult.IsExclusive && fileTags.Any(fileTag =>
+                !parseResult.RequiredTags.Any(allowed => string.Equals(fileTag, allowed, StringComparison.OrdinalIgnoreCase))))
+            {
+                return false;
+            }
+
             // If no specific logic, evaluate the full expression
             return EvaluateExpression(parseResult.NormalizedQuery, fileTags);
         }
@@ -97,12 +108,14 @@ namespace FileTagger.Services
                 var token = tokens[i];
                 result.Add(token);
                 
-                // Add & between tags (but not after operators or before closing parentheses)
+                // Implicit AND wherever one operand ends and the next begins:
+                // "a b", "(a | b) c", "a (b | c)", "(a | b) (c | d)"
                 if (i < tokens.Count - 1)
                 {
                     var nextToken = tokens[i + 1];
-                    if (!IsOperator(token) && !IsOperator(nextToken) && 
-                        token != "(" && nextToken != ")" && token != ")" && nextToken != "(")
+                    var endsOperand = token == ")" || !IsOperator(token);
+                    var startsOperand = nextToken == "(" || !IsOperator(nextToken);
+                    if (endsOperand && startsOperand)
                     {
                         result.Add("&");
                     }
@@ -236,6 +249,15 @@ namespace FileTagger.Services
                         result.ExcludedTags.Add(excludedTag);
                     }
                 }
+                else if (token.StartsWith("*"))
+                {
+                    var exclusiveTag = StripQuotes(token.Substring(1));
+                    if (!string.IsNullOrWhiteSpace(exclusiveTag))
+                    {
+                        result.ExclusiveTags.Add(exclusiveTag);
+                        result.RequiredTags.Add(exclusiveTag);
+                    }
+                }
                 else
                 {
                     var tagName = StripQuotes(token);
@@ -264,7 +286,10 @@ namespace FileTagger.Services
         {
             // Simple recursive descent parser for boolean expressions
             var index = 0;
-            return EvaluateOrExpression(tokens, ref index, fileTags);
+            var result = EvaluateOrExpression(tokens, ref index, fileTags);
+            if (index < tokens.Count)
+                throw new FormatException($"Unexpected '{tokens[index]}' in search query");
+            return result;
         }
 
         private static bool EvaluateOrExpression(List<string> tokens, ref int index, List<string> fileTags)
@@ -317,8 +342,8 @@ namespace FileTagger.Services
             }
             else
             {
-                // Regular tag - should be present (strip quotes from tag name)
-                var tagName = StripQuotes(token);
+                // Regular or exclusive (*) tag - should be present (strip quotes from tag name)
+                var tagName = StripQuotes(token.StartsWith("*") ? token.Substring(1) : token);
                 return fileTags.Any(tag => string.Equals(tag, tagName, StringComparison.OrdinalIgnoreCase));
             }
         }
@@ -333,8 +358,9 @@ namespace FileTagger.Services
 • | = OR: 'tag1 | tag2'
 • () = Grouping: '(tag1 | tag2) & tag3'
 • - = Exclude: '-unwanted tag1'
+• * = Only these tags: '*tag1 *tag2' (files with any tag not named in the search are excluded)
 • Quotes for tags with spaces: 'AI generated' or ""my tag""
-• Examples: 'photo work', 'image | video', '(urgent | important) & -archived', 'AI generated' & photo";
+• Examples: 'photo work', 'image | video', '(urgent | important) & -archived', 'AI generated' & photo, *'AI generated' *photo";
         }
 
         /// <summary>

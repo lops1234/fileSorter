@@ -82,6 +82,68 @@ namespace FileTagger.Tests.Services
             Assert.True(TagSearchParser.EvaluateQuery("a | b c", new List<string> { "b", "c" }));
         }
 
+        [Theory]
+        [InlineData("(Futa | Futas) Femdom", "( Futa | Futas ) & Femdom")]
+        [InlineData("Femdom (Futa | Futas)", "Femdom & ( Futa | Futas )")]
+        [InlineData("(a | b) (c | d)", "( a | b ) & ( c | d )")]
+        [InlineData("(a | b) -c", "( a | b ) & -c")]
+        public void ParseQuery_GroupNextToTagOrGroup_IsJoinedWithAnd(string query, string expected)
+        {
+            Assert.Equal(expected, TagSearchParser.ParseQuery(query).NormalizedQuery);
+        }
+
+        [Theory]
+        [InlineData(new[] { "Futa", "Femdom" }, true)]
+        [InlineData(new[] { "Futas", "Femdom" }, true)]
+        [InlineData(new[] { "Futa" }, false)]
+        [InlineData(new[] { "Futas" }, false)]
+        [InlineData(new[] { "Femdom" }, false)]
+        public void EvaluateQuery_GroupFollowedBySpaceAndTag_RequiresBoth(string[] fileTags, bool expected)
+        {
+            Assert.Equal(expected, TagSearchParser.EvaluateQuery("(Futa | Futas) Femdom", new List<string>(fileTags)));
+            Assert.Equal(expected, TagSearchParser.EvaluateQuery("Femdom (Futa | Futas)", new List<string>(fileTags)));
+        }
+
+        [Fact]
+        public void EvaluateQuery_TwoAdjacentGroups_RequiresBoth()
+        {
+            Assert.True(TagSearchParser.EvaluateQuery("(a | b) (c | d)", new List<string> { "b", "c" }));
+            Assert.False(TagSearchParser.EvaluateQuery("(a | b) (c | d)", new List<string> { "a", "b" }));
+        }
+
+        [Fact]
+        public void ParseQuery_ExtractsExclusiveTags()
+        {
+            var result = TagSearchParser.ParseQuery("*cat *'AI generated' -archived");
+
+            Assert.True(result.IsValid);
+            Assert.True(result.IsExclusive);
+            Assert.Equal(new[] { "cat", "AI generated" }, result.ExclusiveTags);
+            Assert.Equal(new[] { "cat", "AI generated" }, result.RequiredTags);
+            Assert.Equal(new[] { "archived" }, result.ExcludedTags);
+        }
+
+        [Theory]
+        [InlineData("*cat", new[] { "cat" }, true)]
+        [InlineData("*cat", new[] { "CAT" }, true)]
+        [InlineData("*cat", new[] { "cat", "dog" }, false)]
+        [InlineData("*cat", new string[0], false)]
+        [InlineData("*cat *dog", new[] { "cat", "dog" }, true)]
+        [InlineData("*cat *dog", new[] { "cat" }, false)]
+        [InlineData("*cat *dog", new[] { "cat", "dog", "bird" }, false)]
+        [InlineData("*cat | *dog", new[] { "cat" }, true)]
+        [InlineData("*cat | *dog", new[] { "cat", "dog" }, true)]
+        [InlineData("*cat | *dog", new[] { "dog", "bird" }, false)]
+        [InlineData("*cat dog", new[] { "cat", "dog" }, true)]
+        [InlineData("*cat dog", new[] { "cat", "dog", "bird" }, false)]
+        [InlineData("*'AI generated'", new[] { "AI generated" }, true)]
+        [InlineData("*'AI generated'", new[] { "AI generated", "photo" }, false)]
+        [InlineData("cat", new[] { "cat", "dog" }, true)]
+        public void EvaluateQuery_ExclusiveTags_RejectFilesWithOtherTags(string query, string[] fileTags, bool expected)
+        {
+            Assert.Equal(expected, TagSearchParser.EvaluateQuery(query, new List<string>(fileTags)));
+        }
+
         [Fact]
         public void EvaluateQuery_EmptyQuery_MatchesEverything()
         {

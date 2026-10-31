@@ -25,6 +25,12 @@ namespace FileTagger
 
                 DispatcherUnhandledException += OnCliDispatcherUnhandledException;
 
+                if (ShellDropTarget.IsEmbeddingLaunch(e.Args))
+                {
+                    StartShellDropTargetServer();
+                    return;
+                }
+
                 try
                 {
                     if (!CommandLineHandler.HandleCommandLineArgs(e.Args))
@@ -70,6 +76,41 @@ namespace FileTagger
             // Show main window if no command line args were processed
             var mainWindow = new MainWindow();
             mainWindow.Show();
+        }
+
+        private void StartShellDropTargetServer()
+        {
+            try
+            {
+                ShellDropTarget.RunServer(
+                    files =>
+                    {
+                        try
+                        {
+                            if (files.Count > 0)
+                            {
+                                var args = new string[files.Count + 1];
+                                args[0] = "--manage-tags";
+                                files.CopyTo(args, 1);
+                                CommandLineHandler.HandleCommandLineArgs(args);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            CliConsole.ShowError("File Tagger error", "Could not open Manage Tags.", ex);
+                        }
+                        finally
+                        {
+                            Shutdown();
+                        }
+                    },
+                    Shutdown);
+            }
+            catch (Exception ex)
+            {
+                CliConsole.ShowError("File Tagger startup error", "Could not start the Explorer integration.", ex);
+                Shutdown();
+            }
         }
 
         private void OnCliDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
