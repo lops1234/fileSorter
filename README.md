@@ -70,6 +70,7 @@ There are multiple ways to create tags:
 - Right-click on any file in a watched directory
 - Select "Manage Tags" from the context menu
 - Add new tags or select from existing ones
+- Select as many files as you like: "Manage Tags" stays available for any selection size and opens one window for all of them
 
 **Method 2: Through the Application**
 - Open the File Tagger application
@@ -90,6 +91,7 @@ File Tagger supports powerful search syntax for finding files with complex tag c
 - **`|`** = OR: `image | video`
 - **`()`** = Grouping: `(urgent | important) & project`
 - **`-`** = Exclude: `-archived document`
+- **`*`** = Only these tags: `*photo *work` (files that have any tag not named in the search are excluded)
 
 **Search Examples:**
 - `photo work` - Files with BOTH "photo" AND "work" tags
@@ -97,6 +99,9 @@ File Tagger supports powerful search syntax for finding files with complex tag c
 - `(urgent | important) & project` - Files with ("urgent" OR "important") AND "project"
 - `document -archived` - Files with "document" tag but NOT "archived" tag
 - `(photo | image) & work -temp` - Files with ("photo" OR "image") AND "work" but NOT "temp"
+- `*photo *work` - Files tagged with exactly "photo" and "work" and nothing else
+- `*photo | *image` - Files whose only tags are "photo" and/or "image"
+- `*'AI generated'` - Files whose only tag is "AI generated"
 
 #### Filtering Files by Tags
 
@@ -315,6 +320,7 @@ The application minimizes to the system tray when closed, showing a blue folder 
   - `DatabaseManager.cs`: Manages distributed database operations and synchronization
 - `Windows/`: WPF windows and dialogs
 - `ShellIntegration.cs`: Windows Explorer context menu integration
+- `ShellDropTarget.cs`: COM drop target behind "Manage Tags", so Explorer passes any number of selected files to one process
 - `CommandLineHandler.cs`: Handles context menu command line arguments
 - `MainWindow.xaml/cs`: Main application interface
 - `FileTagger.Tests/`: xUnit test project (see [Tests](#tests))
@@ -380,7 +386,7 @@ Sync tests simulate several computers. Each simulated machine (`Machine` in `Inf
 | `Sync/RenameSyncTests.cs` | Tag renames across machines: unseen files, chains, case-only renames, merging into existing names, renames combined with removals |
 | `Sync/FolderMaintenanceSyncTests.cs` | `.filetagger (1)` conflict copies: merging, deleting duplicates, folder cleanup |
 | `Local/` | Watched directories, tagging, renaming, descriptions, delete/stash/restore, file lists, missing-file cleanup, database discovery |
-| `Services/` | Search query parser, temporary search-results folder, tag list labels |
+| `Services/` | Search query parser, temporary search-results folder, tag list labels, Explorer drop-target file list |
 | `Infrastructure/` | Test helpers: sandbox folders, simulated machines, folder database reader |
 
 ### Writing New Tests
